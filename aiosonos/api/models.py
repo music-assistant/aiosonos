@@ -12,7 +12,7 @@ from typing import NotRequired, TypedDict
 class CommandMessage(TypedDict):
     """Representation of a Command message."""
 
-    namespace: str  # e.g. 'groups:1'
+    namespace: str  # e.g. 'groups'
     command: str  # e.g. 'getGroups'
     sessionId: NotRequired[str]  # optional sessionId parameter to pass along
     cmdId: NotRequired[str]  # optional cmdId to pass along
@@ -120,11 +120,23 @@ class PlayerVolume(TypedDict):
     """
     Representation of a PlayerVolume object/response.
 
-    Response message from loadAudioClip command.
-    Reference: https://docs.sonos.com/reference/audioclip-loadaudioclip-playerid
+    Reference: https://docs.sonos.com/docs/types#playervolume
     """
 
     _objectType: str  # = playerVolume
+    fixed: bool
+    muted: bool
+    volume: int
+
+
+class GroupVolume(TypedDict):
+    """
+    Representation of a GroupVolume object/response.
+
+    Reference: https://docs.sonos.com/docs/types#groupvolume
+    """
+
+    _objectType: str  # = groupVolume
     fixed: bool
     muted: bool
     volume: int
@@ -229,7 +241,11 @@ class ActiveZone(TypedDict):
 
 
 class Groups(TypedDict):
-    """Representation of a Groups message (event or response)."""
+    """
+    Representation of a Groups message (event or response).
+
+    Reference: https://docs.sonos.com/docs/types#groups
+    """
 
     _objectType: str  # = groups
     groups: list[Group]
@@ -248,3 +264,42 @@ class DiscoveryInfo(TypedDict):
     groupId: str
     websocketUrl: str
     restUrl: str
+
+
+class PlaybackActions(TypedDict):
+    """Representation of available playback actions."""
+
+    _objectType: str  # = playbackAction
+    canCrossfade: bool
+    canPause: bool
+    canPlay: bool
+    canRepeat: bool
+    canRepeatOne: bool
+    canSeek: bool
+    canShuffle: bool
+    canSkip: bool
+    canSkipBack: bool
+    canSkipToPrevious: bool
+    canStop: bool
+
+
+class PlayModes(TypedDict):
+    """Representation of play modes."""
+
+    _objectType: str  # = playModes
+    crossfade: NotRequired[bool]
+    repeat: NotRequired[bool]
+    repeatOne: NotRequired[bool]
+    shuffle: NotRequired[bool]
+
+
+class PlaybackStatus(TypedDict):
+    """Representation of a playback status."""
+
+    _objectType: str  # = playbackStatus
+    availablePlaybackActions: PlaybackActions
+    isDucking: bool
+    playbackState: PlayBackState
+    playModes: PlayModes
+    positionMillis: int
+    previousPositionMillis: int

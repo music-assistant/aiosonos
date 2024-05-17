@@ -10,7 +10,7 @@ from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackTyp
 class PlayerVolumeNameSpace(SonosNameSpace):
     """PlayerVolume Namespace handlers."""
 
-    namespace = "playerVolume:1"
+    namespace = "playerVolume"
     event_type = "playerVolume"
     _event_model = PlayerVolume
     _event_key = "playerId"

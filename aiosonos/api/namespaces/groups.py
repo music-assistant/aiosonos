@@ -10,7 +10,7 @@ from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackTyp
 class GroupsNameSpace(SonosNameSpace):
     """Groups Namespace handlers."""
 
-    namespace = "groups:1"
+    namespace = "groups"
     event_type = "groups"
     _event_model = Groups
     _event_key = "householdId"

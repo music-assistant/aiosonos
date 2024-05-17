@@ -29,7 +29,9 @@ from aiohttp import ClientSession, ClientWebSocketResponse, WSMsgType, client_ex
 
 from aiosonos.api.models import CommandMessage, ResultMessage
 from aiosonos.api.namespaces.audioclip import AudioClipNameSpace
+from aiosonos.api.namespaces.group_volume import GroupVolumeNameSpace
 from aiosonos.api.namespaces.groups import GroupsNameSpace
+from aiosonos.api.namespaces.playback import PlaybackNameSpace
 from aiosonos.api.namespaces.player_volume import PlayerVolumeNameSpace
 from aiosonos.const import LOCAL_API_TOKEN, LOG_LEVEL_VERBOSE
 from aiosonos.exceptions import (
@@ -48,7 +50,7 @@ if TYPE_CHECKING:
 
     from aiohttp import ClientSession
 
-VERBOSE_LOGGER = True
+API_VERSION = 1
 
 
 class SonosLocalWebSocketsApi:
@@ -67,6 +69,8 @@ class SonosLocalWebSocketsApi:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._audioclip = AudioClipNameSpace(self)
         self._groups = GroupsNameSpace(self)
+        self._group_volume = GroupVolumeNameSpace(self)
+        self._playback = PlaybackNameSpace(self)
         self._player_volume = PlayerVolumeNameSpace(self)
         self._tracked_tasks: dict[str, asyncio.Task] = {}
         self._ws_client: ClientWebSocketResponse | None = None
@@ -88,6 +92,16 @@ class SonosLocalWebSocketsApi:
         return self._groups
 
     @property
+    def group_volume(self) -> GroupVolumeNameSpace:
+        """Return GroupVolume namespace handler."""
+        return self._group_volume
+
+    @property
+    def playback(self) -> PlaybackNameSpace:
+        """Return PlayBack namespace handler."""
+        return self._player_volume
+
+    @property
     def player_volume(self) -> PlayerVolumeNameSpace:
         """Return PlayerVolume namespace handler."""
         return self._player_volume
@@ -104,7 +118,7 @@ class SonosLocalWebSocketsApi:
             raise InvalidState("Not connected")
 
         command_message = CommandMessage(
-            namespace=namespace,
+            namespace=f"{namespace}:{API_VERSION}",
             command=command,
             cmdId=uuid.uuid4().hex,
             # path params are passed as kwargs

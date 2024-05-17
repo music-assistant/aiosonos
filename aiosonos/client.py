@@ -118,7 +118,7 @@ class SonosApiClient:
         self._loop = asyncio.get_running_loop()
         # retrieve discovery details from player first
         async with self._aiohttp_session.get(
-            f"https://{self.player_ip}:1443/api/v1/players/local/info",
+            f"https://{self.player_ip}443/api/v1/players/local/info",
             headers={"X-Sonos-Api-Key": LOCAL_API_TOKEN},
             ssl=ssl.SSLContext(ssl.PROTOCOL_TLSv1_2),
         ) as resp:
@@ -185,6 +185,7 @@ class SonosApiClient:
         """Register/setup a (new) group."""
         group = SonosGroup(self, group_data)
         self._groups[group.id] = group
+        await group.async_init()
         self.signal_event(
             GroupEvent(
                 EventType.GROUP_ADDED,
