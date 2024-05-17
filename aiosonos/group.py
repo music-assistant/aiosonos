@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aiosonos.api.models import MetadataStatus
 from aiosonos.const import EventType, GroupEvent
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ class SonosGroup:
     """Representation of a Sonos Group."""
 
     _playback_data: PlaybackStatusData
+    _playback_metadata_data: MetadataStatus
     _volume_data: GroupVolumeData
     _playback_actions: PlaybackActions
     _play_modes: PlayModes
@@ -44,12 +46,19 @@ class SonosGroup:
     async def async_init(self) -> None:
         """Handle Async initialization."""
         # grab playback data and setup subscription
-        self._playback_data = await self.client.api.playback.get_playback_status(self.id)
         self._volume_data = await self.client.api.group_volume.get_volume(self.id)
+        self._playback_data = await self.client.api.playback.get_playback_status(self.id)
         self._playback_actions = PlaybackActions(self._playback_data["availablePlaybackActions"])
         self._play_modes = PlayModes(self._playback_data["playModes"])
+        self._playback_metadata_data = await self.client.api.playback_metadata.get_metadata_status(
+            self.id,
+        )
         await self.client.api.playback.subscribe(self.id, self._handle_playback_status_update)
         await self.client.api.group_volume.subscribe(self.id, self._handle_volume_update)
+        await self.client.api.playback_metadata.subscribe(
+            self.id,
+            self._handle_metadata_status_update,
+        )
 
     @property
     def name(self) -> str:
@@ -181,6 +190,19 @@ class SonosGroup:
         self._playback_data = data
         self._playback_actions.raw_data.update(data["availablePlaybackActions"])
         self._play_modes.raw_data.update(data["playModes"])
+        self.client.signal_event(
+            GroupEvent(
+                EventType.GROUP_UPDATED,
+                data["id"],
+                self,
+            ),
+        )
+
+    def _handle_metadata_status_update(self, data: MetadataStatus) -> None:
+        """Handle MetadataStatus update."""
+        if data == self._playback_metadata_data:
+            return
+        self._playback_data = data
         self.client.signal_event(
             GroupEvent(
                 EventType.GROUP_UPDATED,

@@ -303,3 +303,224 @@ class PlaybackStatus(TypedDict):
     playModes: PlayModes
     positionMillis: int
     previousPositionMillis: int
+
+
+class MetadataId(TypedDict):
+    """Representation of an ID, used in metadata objects."""
+
+    _objectType: str  # = id
+    serviceId: NotRequired[str]
+    objectId: NotRequired[str]
+    accountId: NotRequired[str]
+
+
+class Service(TypedDict):
+    """Representation of a service."""
+
+    _objectType: str  # = service
+    name: str
+    images: NotRequired[list[Image]]
+
+
+class Image(TypedDict):
+    """Representation of an image."""
+
+    _objectType: str  # = image
+    url: str
+    name: NotRequired[str]
+    type: NotRequired[str]
+
+
+class Author(TypedDict):
+    """Representation of an author."""
+
+    name: str
+    id: MetadataId
+
+
+class Narrator(TypedDict):
+    """Representation of a narrator."""
+
+    name: str
+    id: MetadataId
+
+
+class Producer(TypedDict):
+    """Representation of a podcast producer."""
+
+    name: str
+    id: NotRequired[MetadataId]
+
+
+class Book(TypedDict):
+    """Representation of a (audio)book."""
+
+    _objectType: str  # = book
+    name: str
+    chapterCount: NotRequired[int]
+    author: NotRequired[Author]
+    narrator: NotRequired[Narrator]
+    id: NotRequired[MetadataId]
+
+
+class Podcast(TypedDict):
+    """Representation of a podcast."""
+
+    name: str
+    producer: NotRequired[Producer]
+    id: NotRequired[MetadataId]
+    explicit: NotRequired[bool]
+
+
+class Album(TypedDict):
+    """Representation of an album."""
+
+    _objectType: str  # = album
+
+    name: str
+
+
+class Artist(TypedDict):
+    """Representation of an artist."""
+
+    _objectType: str  # = artist
+
+    name: str
+
+
+class Quality(TypedDict):
+    """Representation of track quality."""
+
+    _objectType: str  # = quality
+
+    bitDepth: NotRequired[int]
+    sampleRate: NotRequired[int]
+    codec: NotRequired[str]
+    lossless: NotRequired[bool]
+    immersive: NotRequired[bool]
+    replayGain: NotRequired[float]
+
+
+class Track(TypedDict):
+    """Representation of a track."""
+
+    _objectType: str  # = track
+
+    type: str
+    name: str
+    mediaUrl: NotRequired[str]
+    images: NotRequired[list[Image]]
+    contentType: NotRequired[str]
+    album: NotRequired[Album]
+    artist: NotRequired[Artist]
+    author: NotRequired[Author]
+    book: NotRequired[Book]
+    narrator: NotRequired[Narrator]
+    podcast: NotRequired[Podcast]
+    producer: NotRequired[Producer]
+    releaseDate: NotRequired[str]
+    episodeNumber: NotRequired[int]
+    id: NotRequired[MetadataId]
+    service: NotRequired[Service]
+    durationMillis: NotRequired[int]
+    trackNumber: NotRequired[int]
+    chapterNumber: NotRequired[int]
+    explicit: NotRequired[bool]
+
+
+class Show(TypedDict):
+    """
+    Representation of a (Radio)Show).
+
+    Information about the current "show", when available.
+    Generally only present for radio stations (container.type = "station")
+    """
+
+    _objectType: str  # = show
+    name: str
+    id: NotRequired[MetadataId]
+    images: NotRequired[list[Image]]
+    explicit: NotRequired[bool]
+
+
+class PlaybackSession(TypedDict):
+    """
+    Representation of a PlaybackSession.
+
+    Provides details on the external source that initiated the playback.
+    """
+
+    _objectType: str  # = show
+    clientId: str
+    isSuspended: bool
+    accountId: str
+
+
+class Container(TypedDict):
+    """
+    Representation of a container.
+
+    A container object indicating the current playback source.
+    The container describes and identifies what is currently playing,
+    for example, the programmed radio station, music service playlist,
+    or linein source.
+
+    If no content is loaded, the container field will not be present.
+    """
+
+    _objectType: str  # = container
+    name: str
+    type: str
+    id: NotRequired[MetadataId]
+    service: NotRequired[Service]
+    images: NotRequired[list[Image]]
+    book: NotRequired[Book]
+    podcast: NotRequired[Podcast]
+    explicit: NotRequired[bool]
+
+
+class QueueItem(TypedDict):
+    """Representation of a Queue item."""
+
+    _objectType: str  # = queueItem
+
+    class Policies(TypedDict):
+        """Representation of (playback)policies."""
+
+        canSkip: NotRequired[bool]
+        canSkipToPrevious: NotRequired[bool]
+        limitedSkips: NotRequired[bool]
+        canSeek: NotRequired[bool]
+        canSkipToItem: NotRequired[bool]
+        canRepeat: NotRequired[bool]
+        canRepeatOne: NotRequired[bool]
+        canCrossfade: NotRequired[bool]
+        canShuffle: NotRequired[bool]
+        canResume: NotRequired[bool]
+        pauseAtEndOfQueue: NotRequired[bool]
+        refreshAuthWhilePaused: NotRequired[bool]
+        showNNextTracks: NotRequired[int]
+        showNPreviousTracks: NotRequired[int]
+        isVisible: NotRequired[bool]
+        notifyUserIntent: NotRequired[bool]
+        pauseTtlSec: NotRequired[int]
+        playTtlSec: NotRequired[int]
+        pauseOnDuck: NotRequired[bool]
+
+    id: str
+    deleted: NotRequired[bool]
+    track: NotRequired[Track]
+    policies: NotRequired[Policies]
+
+
+class MetadataStatus(TypedDict):
+    """Representation of (playback) metadata status."""
+
+    _objectType: str  # = metadataStatus
+
+    container: NotRequired[Container]
+    currentItem: NotRequired[QueueItem]
+    nextItem: NotRequired[QueueItem]
+    currentShow: NotRequired[Show]
+    streamInfo: NotRequired[str]
+    playbackSession: NotRequired[PlaybackSession]
