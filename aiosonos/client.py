@@ -12,6 +12,7 @@ import ssl
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Self
 
+from aiosonos.api.models import GroupInfo
 from aiosonos.const import LOCAL_API_TOKEN, EventType, GroupEvent, SonosEvent
 
 from .api.websockets import SonosLocalWebSocketsApi
@@ -153,6 +154,27 @@ class SonosApiClient:
         # setup global groups/player subscription
         await self.api.groups.subscribe(self._household_id, self._handle_groups_event)
         await listen_task
+
+    async def create_group(
+        self,
+        player_ids: list[str],
+        music_context_group_id: str | None = None,
+    ) -> GroupInfo:
+        """
+        Create a new group.
+
+        Use the createGroup command in the groups namespace to
+        create a new group from a list of players. The player returns
+        a group object with the group ID. This may be an existing
+        group ID if an existing group is a subset of the new group.
+        In this case, Sonos may build the new group by adding new
+        players to the existing group.
+
+        musicContextGroupId (Optional): The group containing the audio
+        that you want to use. If empty or not provided,
+        the new group will not contain any audio.
+        """
+        await self.api.groups.create_group(self._household_id, player_ids, music_context_group_id)
 
     def _handle_groups_event(self, groups_data: GroupsData) -> None:
         """Handle a groups event."""

@@ -169,6 +169,26 @@ class SonosGroup:
             play_on_completion=play_on_completion,
         )
 
+    async def modify_group_members(
+        self,
+        player_ids_to_add: list[str],
+        player_ids_to_remove: list[str],
+    ) -> None:
+        """Modify the group's members."""
+        await self.client.api.groups.modify_group_members(
+            self.id,
+            player_ids_to_add,
+            player_ids_to_remove,
+        )
+
+    async def set_group_members(
+        self,
+        player_ids: list[str],
+        area_ids: list[str] | None = None,
+    ) -> None:
+        """Set/replace the group's members."""
+        await self.client.api.groups.set_group_members(self.id, player_ids, area_ids)
+
     def update_data(self, data: GroupData) -> None:
         """Update the player data."""
         if data == self._data:

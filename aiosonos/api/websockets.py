@@ -33,6 +33,7 @@ from aiosonos.api.namespaces.group_volume import GroupVolumeNameSpace
 from aiosonos.api.namespaces.groups import GroupsNameSpace
 from aiosonos.api.namespaces.playback import PlaybackNameSpace
 from aiosonos.api.namespaces.playback_metadata import PlaybackMetadataNameSpace
+from aiosonos.api.namespaces.playback_session import PlaybackSessionNameSpace
 from aiosonos.api.namespaces.player_volume import PlayerVolumeNameSpace
 from aiosonos.const import LOCAL_API_TOKEN, LOG_LEVEL_VERBOSE
 from aiosonos.exceptions import (
@@ -73,6 +74,7 @@ class SonosLocalWebSocketsApi:
         self._group_volume = GroupVolumeNameSpace(self)
         self._playback = PlaybackNameSpace(self)
         self._playback_metadata = PlaybackMetadataNameSpace(self)
+        self._playback_session = PlaybackSessionNameSpace(self)
         self._player_volume = PlayerVolumeNameSpace(self)
         self._tracked_tasks: dict[str, asyncio.Task] = {}
         self._ws_client: ClientWebSocketResponse | None = None
@@ -107,6 +109,11 @@ class SonosLocalWebSocketsApi:
     def playback_metadata(self) -> PlaybackMetadataNameSpace:
         """Return PlaybackMetadata namespace handler."""
         return self._playback_metadata
+
+    @property
+    def playback_session(self) -> PlaybackSessionNameSpace:
+        """Return PlaybackSession namespace handler."""
+        return self._playback_session
 
     @property
     def player_volume(self) -> PlayerVolumeNameSpace:

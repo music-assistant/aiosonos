@@ -524,3 +524,14 @@ class MetadataStatus(TypedDict):
     currentShow: NotRequired[Show]
     streamInfo: NotRequired[str]
     playbackSession: NotRequired[PlaybackSession]
+
+
+class SessionStatus(TypedDict):
+    """Representation of a (Playback) session status."""
+
+    _objectType: str  # = sessionStatus
+
+    sessionId: str
+    sessionState: str  # SESSION_STATE_CONNECTED
+    sessionCreated: bool
+    customData: str

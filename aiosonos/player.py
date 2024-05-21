@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aiosonos.const import EventType, PlayerEvent
+from aiosonos.group import SonosGroup
 
 if TYPE_CHECKING:
     from .api.models import Player as PlayerData
@@ -15,11 +16,17 @@ if TYPE_CHECKING:
 class SonosPlayer:
     """Representation of a Sonos Player."""
 
+    _active_group: SonosGroup
+
     def __init__(self, client: SonosApiClient, data: PlayerData) -> None:
         """Handle initialization."""
         self.client = client
         self._data = data
         self._volume_data: PlayerVolumeData | None = None
+        for group in client.groups:
+            if group.coordinator_id == self.id or self.id in group.player_ids:
+                self._active_group = group
+                break
 
     async def async_init(self) -> None:
         """Handle Async initialization."""
@@ -57,9 +64,58 @@ class SonosPlayer:
         """Return if this player has a fixed volume level."""
         return self._volume_data.get("fixed")
 
+    @property
+    def group(self) -> SonosGroup:
+        """Return the active group."""
+        return self._active_group
+
+    @property
+    def is_coordinator(self) -> bool:
+        """Return if this player is the coordinator of the active group it belongs to."""
+        return self.group.coordinator_id == self.id
+
+    @property
+    def is_passive(self) -> bool:
+        """Return if this player is the NOT a coordinator but a passive memebr of a group."""
+        return self.group.coordinator_id == self.id
+
+    @property
+    def group_members(self) -> list[str]:
+        """Return the player ids of the group members."""
+        return self.group.player_ids
+
+    async def set_volume(self, volume: int | None = None, muted: bool | None = None) -> None:
+        """Set the volume of the player."""
+        await self.client.api.player_volume.set_volume(self.id, volume, muted)
+
+    async def duck(self, duration_millis: int | None = None) -> None:
+        """Duck the volume of the player."""
+        await self.client.api.player_volume.duck(self.id, duration_millis)
+
+    async def leave_group(self) -> None:
+        """Leave the active group this player is joined to (if any)."""
+        await self.client.api.groups.modify_group_members(
+            self.group.id,
+            player_ids_to_add=[],
+            player_ids_to_remove=[self.id],
+        )
+
+    async def join_group(self, group_id: str) -> None:
+        """Join a group."""
+        await self.client.api.groups.modify_group_members(
+            group_id,
+            player_ids_to_add=[self.id],
+            player_ids_to_remove=[],
+        )
+
     def update_data(self, data: PlayerData) -> None:
         """Update the player data."""
-        if data == self._data:
+        cur_group_id = self.group.id
+        for group in self.client.groups:
+            if group.coordinator_id == self.id or self.id in group.player_ids:
+                self._active_group = group
+                break
+        if data == self._data and cur_group_id == self._active_group.id:
             return
         for key, value in data.items():
             self._data[key] = value
