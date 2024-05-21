@@ -1,2 +1,2 @@
 """Provide a package for AIOSonos."""
-from .client import SonosApiClient  # noqa: F401
+from .client import SonosLocalApiClient  # noqa: F401

@@ -9,7 +9,7 @@ from typing import Final
 
 from aiohttp import ClientSession
 
-from aiosonos import SonosApiClient
+from aiosonos import SonosLocalApiClient
 from aiosonos.const import LOG_LEVEL_VERBOSE
 
 logging.basicConfig(level=logging.DEBUG)
@@ -52,7 +52,7 @@ if __name__ == "__main__":
     async def run_client() -> None:
         """Run the SonosApi client."""
         # run the client
-        async with ClientSession() as session, SonosApiClient(
+        async with ClientSession() as session, SonosLocalApiClient(
             args.player_ip,
             session,
         ) as client:

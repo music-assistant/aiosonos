@@ -15,18 +15,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiosonos.api.models import MetadataStatus
 from aiosonos.const import EventType, GroupEvent
 
 if TYPE_CHECKING:
     from aiosonos.api.models import GroupVolume as GroupVolumeData
-    from aiosonos.api.models import PlayBackState
+    from aiosonos.api.models import MetadataStatus, PlayBackState
     from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
     from aiosonos.api.models import PlayModes as PlayModesData
 
     from .api.models import Group as GroupData
     from .api.models import PlaybackActions as PlaybackActionsData
-    from .client import SonosApiClient
+    from .client import SonosLocalApiClient
 
 
 class SonosGroup:
@@ -38,7 +37,7 @@ class SonosGroup:
     _playback_actions: PlaybackActions
     _play_modes: PlayModes
 
-    def __init__(self, client: SonosApiClient, data: GroupData) -> None:
+    def __init__(self, client: SonosLocalApiClient, data: GroupData) -> None:
         """Handle initialization."""
         self.client = client
         self._data = data

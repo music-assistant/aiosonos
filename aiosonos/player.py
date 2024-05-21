@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aiosonos.api.models import AudioClipLEDBehavior, AudioClipType
 from aiosonos.const import EventType, PlayerEvent
-from aiosonos.group import SonosGroup
 
 if TYPE_CHECKING:
+    from aiosonos.group import SonosGroup
+
     from .api.models import Player as PlayerData
     from .api.models import PlayerVolume as PlayerVolumeData
-    from .client import SonosApiClient
+    from .client import SonosLocalApiClient
 
 
 class SonosPlayer:
@@ -18,7 +20,7 @@ class SonosPlayer:
 
     _active_group: SonosGroup
 
-    def __init__(self, client: SonosApiClient, data: PlayerData) -> None:
+    def __init__(self, client: SonosLocalApiClient, data: PlayerData) -> None:
         """Handle initialization."""
         self.client = client
         self._data = data
@@ -106,6 +108,18 @@ class SonosPlayer:
             group_id,
             player_ids_to_add=[self.id],
             player_ids_to_remove=[],
+        )
+
+    async def play_audio_clip(self, url: str, volume: int | None = None) -> None:
+        """Play an audio clip (announcement) on the player."""
+        await self.client.api.audio_clip.load_audio_clip(
+            self.id,
+            url,
+            name=url,
+            app_id="aiosonos",
+            volume=volume,
+            clip_type=AudioClipType.CUSTOM,
+            clip_led_behavior=AudioClipLEDBehavior.WHITE_LED_QUICK_BREATHING,
         )
 
     def update_data(self, data: PlayerData) -> None:

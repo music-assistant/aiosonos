@@ -12,7 +12,6 @@ import ssl
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Self
 
-from aiosonos.api.models import GroupInfo
 from aiosonos.const import LOCAL_API_TOKEN, EventType, GroupEvent, SonosEvent
 
 from .api.websockets import SonosLocalWebSocketsApi
@@ -24,7 +23,7 @@ if TYPE_CHECKING:
 
     from aiohttp import ClientSession
 
-    from aiosonos.api.models import DiscoveryInfo
+    from aiosonos.api.models import DiscoveryInfo, GroupInfo
 
     from .api.models import Group as GroupData
     from .api.models import Groups as GroupsData
@@ -38,7 +37,7 @@ EventSubscriptionType = tuple[
 ]
 
 
-class SonosApiClient:
+class SonosLocalApiClient:
     """Sonos API Client to manage a single Sonos speaker, using the local websockets api."""
 
     api: SonosLocalWebSocketsApi
