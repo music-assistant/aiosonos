@@ -39,8 +39,8 @@ class AbstractSonosApi:
         self._player_volume = PlayerVolumeNameSpace(self)
         self._tracked_tasks: dict[str, asyncio.Task] = {}
 
-    @abstractmethod
     @property
+    @abstractmethod
     def connected(self) -> bool:
         """Return if we're currently connected."""
 
@@ -62,7 +62,7 @@ class AbstractSonosApi:
     @property
     def playback(self) -> PlaybackNameSpace:
         """Return PlayBack namespace handler."""
-        return self._player_volume
+        return self._playback
 
     @property
     def playback_metadata(self) -> PlaybackMetadataNameSpace:

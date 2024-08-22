@@ -23,6 +23,8 @@ class EventType(StrEnum):
     PLAYER_ADDED = "player_added"
     PLAYER_UPDATED = "player_updated"
     PLAYER_REMOVED = "player_removed"
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
 
     # special event type to match all events
     MATCH_ALL = "match_all"

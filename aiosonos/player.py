@@ -49,7 +49,7 @@ class SonosPlayer:
     @property
     def icon(self) -> str:
         """Return the icon."""
-        return self._data["icon"]
+        return self._data.get("icon", "")
 
     @property
     def volume_level(self) -> int | None:
@@ -78,8 +78,8 @@ class SonosPlayer:
 
     @property
     def is_passive(self) -> bool:
-        """Return if this player is the NOT a coordinator but a passive memebr of a group."""
-        return self.group.coordinator_id == self.id
+        """Return if this player is the NOT a coordinator but a passive member of a group."""
+        return self.group.coordinator_id != self.id
 
     @property
     def group_members(self) -> list[str]:
@@ -136,7 +136,7 @@ class SonosPlayer:
         self.client.signal_event(
             PlayerEvent(
                 EventType.PLAYER_UPDATED,
-                data["id"],
+                data.get("id", self.id),
                 self,
             ),
         )

@@ -16,10 +16,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aiosonos.const import EventType, GroupEvent
+from aiosonos.exceptions import FailedCommand
 
 if TYPE_CHECKING:
+    from aiosonos.api.models import (
+        Container,
+        MetadataStatus,
+        PlayBackState,
+        SessionStatus,
+        Track,
+    )
     from aiosonos.api.models import GroupVolume as GroupVolumeData
-    from aiosonos.api.models import MetadataStatus, PlayBackState
     from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
     from aiosonos.api.models import PlayModes as PlayModesData
 
@@ -31,7 +38,7 @@ if TYPE_CHECKING:
 class SonosGroup:
     """Representation of a Sonos Group."""
 
-    _playback_data: PlaybackStatusData
+    _playback_status_data: PlaybackStatusData
     _playback_metadata_data: MetadataStatus
     _volume_data: GroupVolumeData
     _playback_actions: PlaybackActions
@@ -40,24 +47,47 @@ class SonosGroup:
     def __init__(self, client: SonosLocalApiClient, data: GroupData) -> None:
         """Handle initialization."""
         self.client = client
+        self.active_session_id: str | None = None
         self._data = data
 
     async def async_init(self) -> None:
         """Handle Async initialization."""
         # grab playback data and setup subscription
-        self._volume_data = await self.client.api.group_volume.get_volume(self.id)
-        self._playback_data = await self.client.api.playback.get_playback_status(self.id)
-        self._playback_actions = PlaybackActions(self._playback_data["availablePlaybackActions"])
-        self._play_modes = PlayModes(self._playback_data["playModes"])
-        self._playback_metadata_data = await self.client.api.playback_metadata.get_metadata_status(
-            self.id,
-        )
-        await self.client.api.playback.subscribe(self.id, self._handle_playback_status_update)
-        await self.client.api.group_volume.subscribe(self.id, self._handle_volume_update)
-        await self.client.api.playback_metadata.subscribe(
-            self.id,
-            self._handle_metadata_status_update,
-        )
+        try:
+            self._volume_data = await self.client.api.group_volume.get_volume(self.id)
+            self._playback_status_data = (
+                await self.client.api.playback.get_playback_status(self.id)
+            )
+            self._playback_actions = PlaybackActions(
+                self._playback_status_data["availablePlaybackActions"],
+            )
+            self._play_modes = PlayModes(self._playback_status_data["playModes"])
+            self._playback_metadata_data = (
+                await self.client.api.playback_metadata.get_metadata_status(
+                    self.id,
+                )
+            )
+            await self.client.api.playback.subscribe(
+                self.id, self._handle_playback_status_update
+            )
+            await self.client.api.group_volume.subscribe(
+                self.id, self._handle_volume_update
+            )
+            await self.client.api.playback_metadata.subscribe(
+                self.id,
+                self._handle_metadata_status_update,
+            )
+        except FailedCommand as err:
+            if err.error_code == "groupCoordinatorChanged":
+                # retrieving group details is not possible for remote groups when
+                # connected to a player's local websocket.
+                self._volume_data = {}
+                self._playback_status_data = {}
+                self._playback_actions = PlaybackActions({})
+                self._play_modes = PlayModes({})
+                self._playback_metadata_data = {}
+                return
+            raise
 
     @property
     def name(self) -> str:
@@ -77,7 +107,11 @@ class SonosGroup:
     @property
     def playback_state(self) -> PlayBackState:
         """Return the playback state of this group."""
-        return self._playback_data.get("playbackState") or self._data["playbackState"]
+        return (
+            self._playback_status_data.get("playbackState")
+            or self._data.get("playbackState")
+            or PlayBackState.PLAYBACK_STATE_IDLE
+        )
 
     @property
     def player_ids(self) -> list[str]:
@@ -95,6 +129,21 @@ class SonosGroup:
         return self._playback_actions
 
     @property
+    def playback_metadata(self) -> MetadataStatus:
+        """Return the MetadataStatus of this group."""
+        return self._playback_metadata_data
+
+    @property
+    def position(self) -> float:
+        """Return the current position in (fractions of) seconds."""
+        return self._playback_status_data.get("positionMillis", 0) / 1000
+
+    @property
+    def is_ducking(self) -> bool:
+        """Return if the group's volume is currently ducked."""
+        return self._playback_status_data.get("isDucking", False)
+
+    @property
     def play_modes(self) -> PlayModes:
         """Return the play modes of this group."""
         return self._play_modes
@@ -106,6 +155,14 @@ class SonosGroup:
     async def pause(self) -> None:
         """Send pause command to group."""
         await self.client.api.playback.pause(self.id)
+
+    async def stop(self) -> None:
+        """Send stop command to group."""
+        if session_id := self.active_session_id:
+            self.active_session_id = None
+            await self.client.api.playback_session.suspend(session_id)
+        else:
+            await self.client.api.playback.pause(self.id)
 
     async def toggle_play_pause(self) -> None:
         """Send play/pause command to group."""
@@ -188,6 +245,65 @@ class SonosGroup:
         """Set/replace the group's members."""
         await self.client.api.groups.set_group_members(self.id, player_ids, area_ids)
 
+    async def create_playback_session(
+        self,
+        app_id: str = "com.aiosonos.playback",
+        app_context: str = "1",
+        account_id: str | None = None,
+        custom_data: dict | None = None,
+    ) -> SessionStatus:
+        """Create a new Playback Session."""
+        session = await self.client.api.playback_session.create_session(
+            self.id,
+            app_id,
+            app_context,
+            account_id,
+            custom_data,
+        )
+        self.active_session_id = session["sessionId"]
+        return session
+
+    async def play_stream_url(self, url: str, metadata: Container) -> None:
+        """Create a new playback session and start playing a single (radio) stream URL."""
+        if not self.active_session_id:
+            await self.create_playback_session()
+        await self.client.api.playback_session.load_stream_url(
+            self.active_session_id,
+            stream_url=url,
+            play_on_completion=True,
+            station_metadata=metadata,
+        )
+
+    async def play_cloud_queue(
+        self,
+        queue_base_url: str,
+        http_authorization: str | None = None,
+        use_http_authorization_for_media: bool | None = None,
+        item_id: str | None = None,
+        queue_version: str | None = None,
+        position_millis: int | None = None,
+        track_metadata: Track | None = None,
+    ) -> None:
+        """
+        Create a new playback session and start playing a (cloud) queue.
+
+        For all options, see:
+        https://docs.sonos.com/reference/playbacksession-loadcloudqueue-sessionid
+        """
+        if not self.active_session_id:
+            await self.create_playback_session()
+        await self.client.api.playback_session.load_cloud_queue(
+            self.active_session_id,
+            queue_base_url=queue_base_url,
+            http_authorization=http_authorization,
+            use_http_authorization_for_media=use_http_authorization_for_media,
+            item_id=item_id,
+            queue_version=queue_version,
+            position_millis=position_millis,
+            play_on_completion=True,
+            track_metadata=track_metadata,
+        )
+
     def update_data(self, data: GroupData) -> None:
         """Update the player data."""
         if data == self._data:
@@ -204,15 +320,15 @@ class SonosGroup:
 
     def _handle_playback_status_update(self, data: PlaybackStatusData) -> None:
         """Handle playbackStatus update."""
-        if data == self._playback_data:
+        if data == self._playback_status_data:
             return
-        self._playback_data = data
+        self._playback_status_data = data
         self._playback_actions.raw_data.update(data["availablePlaybackActions"])
         self._play_modes.raw_data.update(data["playModes"])
         self.client.signal_event(
             GroupEvent(
                 EventType.GROUP_UPDATED,
-                data["id"],
+                self.id,
                 self,
             ),
         )
@@ -221,11 +337,11 @@ class SonosGroup:
         """Handle MetadataStatus update."""
         if data == self._playback_metadata_data:
             return
-        self._playback_data = data
+        self._playback_metadata_data = data
         self.client.signal_event(
             GroupEvent(
                 EventType.GROUP_UPDATED,
-                data["id"],
+                self.id,
                 self,
             ),
         )
@@ -238,7 +354,7 @@ class SonosGroup:
         self.client.signal_event(
             GroupEvent(
                 EventType.GROUP_UPDATED,
-                data["id"],
+                self.id,
                 self,
             ),
         )

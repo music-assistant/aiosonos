@@ -5,14 +5,15 @@ Although the only connection method that is implemented,
 is the local websockets connection, the cloud API shares the same models and
 namespaces so this client could be extended to support the cloud API as well.
 """
+
 from __future__ import annotations
 
 import asyncio
-import ssl
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Self
 
-from aiosonos.const import LOCAL_API_TOKEN, EventType, GroupEvent, SonosEvent
+from aiosonos.const import EventType, GroupEvent, SonosEvent
+from aiosonos.utils import get_discovery_info
 
 from .api.websockets import SonosLocalWebSocketsApi
 from .group import SonosGroup
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
 
     from aiohttp import ClientSession
 
-    from aiosonos.api.models import DiscoveryInfo, GroupInfo
+    from aiosonos.api.models import GroupInfo
 
     from .api.models import Group as GroupData
     from .api.models import Groups as GroupsData
@@ -107,7 +108,7 @@ class SonosLocalApiClient:
     def signal_event(self, event: SonosEvent) -> None:
         """Forward event to subscribers."""
         for cb_func, event_filter, id_filter in self._subscribers:
-            if not (event_filter is None or event.event in event_filter):
+            if not (event_filter is None or event.event_type in event_filter):
                 continue
             if not (id_filter is None or event.object_id in id_filter):
                 continue
@@ -117,17 +118,11 @@ class SonosLocalApiClient:
         """Connect to the API."""
         self._loop = asyncio.get_running_loop()
         # retrieve discovery details from player first
-        async with self._aiohttp_session.get(
-            f"https://{self.player_ip}443/api/v1/players/local/info",
-            headers={"X-Sonos-Api-Key": LOCAL_API_TOKEN},
-            ssl=ssl.SSLContext(ssl.PROTOCOL_TLSv1_2),
-        ) as resp:
-            resp.raise_for_status()
-            discovery_data: DiscoveryInfo = await resp.json()
-        self._player_id = discovery_data["playerId"]
-        self._household_id = discovery_data["householdId"]
+        discovery_info = await get_discovery_info(self._aiohttp_session, self.player_ip)
+        self._player_id = discovery_info["playerId"]
+        self._household_id = discovery_info["householdId"]
         # Connect to the local websocket API
-        self.api = SonosLocalWebSocketsApi(discovery_data["websocketUrl"], self._aiohttp_session)
+        self.api = SonosLocalWebSocketsApi(discovery_info["websocketUrl"], self._aiohttp_session)
         # NOTE: connect will raise when connecting failed
         await self.api.connect()
 
@@ -137,7 +132,7 @@ class SonosLocalApiClient:
 
     async def start_listening(self, init_ready: asyncio.Event | None = None) -> None:
         """Fetch initial state keep listening to messages until stopped."""
-        listen_task = asyncio.create_task(self.api.start_listening(init_ready))
+        listen_task = asyncio.create_task(self.api.start_listening())
         # fetch all initial data and setup subscriptions
         groups_data = await self.api.groups.get_groups(self.household_id, include_device_info=True)
         for group_data in groups_data["groups"]:
@@ -152,6 +147,9 @@ class SonosLocalApiClient:
         await player.async_init()
         # setup global groups/player subscription
         await self.api.groups.subscribe(self._household_id, self._handle_groups_event)
+        # set event that initial setup is done
+        init_ready.set()
+        # wait (forever) for incoming messages
         await listen_task
 
     async def create_group(

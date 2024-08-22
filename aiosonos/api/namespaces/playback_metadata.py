@@ -11,7 +11,7 @@ class PlaybackMetadataNameSpace(SonosNameSpace):
     """PlaybackMetadataNameSpace Namespace handlers."""
 
     namespace = "playbackMetadata"
-    event_type = "playbackMetadata"
+    event_type = "metadataStatus"
     _event_model = MetadataStatus
     _event_key = "groupId"
 

@@ -15,6 +15,7 @@ to support the cloud API as well.
 In that case, commands are sent by regular HTTP GET/POST/PUT/DELETE requests,
 and events received by a callback URL that you have to provide to the Sonos cloud API.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -115,13 +116,10 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         # body params are passed as options
         self.create_task(self._send_message([command_message, options or {}]))
 
-    async def start_listening(self, init_ready: asyncio.Event | None = None) -> None:
+    async def start_listening(self) -> None:
         """Connect (if needed) and start listening to incoming messages from the server."""
         if not self.connected:
             await self.connect()
-
-        if init_ready is not None:
-            init_ready.set()
 
         try:
             # keep reading incoming messages
@@ -176,29 +174,48 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
             await self._ws_client.close()
         self._ws_client = None
 
-    def _handle_incoming_message(self, raw: tuple[ResultMessage, dict[str, Any]]) -> None:
+    def _handle_incoming_message(
+        self, raw: tuple[ResultMessage, dict[str, Any]]
+    ) -> None:
         """
         Handle incoming message.
 
         Run all async tasks in a wrapper to log appropriately.
         """
         msg, msg_data = raw
-        # handle command result message
-        if "success" in raw[0]:
-            future = self._result_futures.get(msg["cmdId"])
-            if future is None:
-                # no listener for this result
+
+        # handle error message
+        if "errorCode" in msg_data:
+            if "cmdId" not in msg:
+                self.logger.error("Received error message without cmdId: %s", msg)
                 return
-            if msg["success"]:
-                future.set_result(msg_data)
-            else:
-                future.set_exception(FailedCommand(msg_data["errorCode"], msg_data["reason"]))
+            if future := self._result_futures.get(msg["cmdId"]):
+                future.set_exception(
+                    FailedCommand(msg_data["errorCode"], msg_data.get("reason"))
+                )
+            return
+
+        # handle command result message
+        if "success" in msg:
+            if future := self._result_futures.get(msg["cmdId"]):
+                if msg["success"]:
+                    future.set_result(msg_data)
+                else:
+                    future.set_exception(FailedCommand(msg_data["_objectType"]))
             return
 
         # handle EventMessage
         if event_type := msg.get("type"):
             # handle namespace specific events
-            for namespace in (self._audioclip, self._groups, self._player_volume):
+            for namespace in (
+                self._audio_clip,
+                self._groups,
+                self._group_volume,
+                self._playback_metadata,
+                self._playback_session,
+                self._playback,
+                self._player_volume,
+            ):
                 if event_type == namespace.event_type:
                     self.create_task(namespace._handle_event(msg, msg_data))  # noqa: SLF001
                     break
@@ -237,11 +254,15 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
             raise InvalidMessage("Received invalid JSON.") from err
 
         if self.logger.isEnabledFor(LOG_LEVEL_VERBOSE):
-            self.logger.log(LOG_LEVEL_VERBOSE, "Received message:\n%s\n", pprint.pformat(ws_msg))
+            self.logger.log(
+                LOG_LEVEL_VERBOSE, "Received message:\n%s\n", pprint.pformat(ws_msg)
+            )
 
         return msg
 
-    async def _send_message(self, message: tuple[CommandMessage, dict[str, Any]]) -> None:
+    async def _send_message(
+        self, message: tuple[CommandMessage, dict[str, Any]]
+    ) -> None:
         """
         Send a message to the server.
 
@@ -251,7 +272,9 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
             raise NotConnected
 
         if self.logger.isEnabledFor(LOG_LEVEL_VERBOSE):
-            self.logger.log(LOG_LEVEL_VERBOSE, "Publishing message:\n%s\n", pprint.pformat(message))
+            self.logger.log(
+                LOG_LEVEL_VERBOSE, "Publishing message:\n%s\n", pprint.pformat(message)
+            )
 
         assert self._ws_client
         # sonos messages are always an array of 2 dict objects

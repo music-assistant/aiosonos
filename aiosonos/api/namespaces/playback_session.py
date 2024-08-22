@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Container
+
 from aiosonos.api.models import SessionStatus, Track
 
 from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackType
@@ -94,7 +96,7 @@ class PlaybackSessionNameSpace(SonosNameSpace):
         session_id: str,
         stream_url: str,
         play_on_completion: bool | None = None,
-        station_metadata: Track | None = None,
+        station_metadata: Container | None = None,
         item_id: str | None = None,
     ) -> None:
         """

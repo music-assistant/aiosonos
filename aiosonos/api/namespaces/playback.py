@@ -11,7 +11,7 @@ class PlaybackNameSpace(SonosNameSpace):
     """PlaybackNameSpace Namespace handlers."""
 
     namespace = "playback"
-    event_type = "playback"
+    event_type = "playbackStatus"
     _event_model = PlaybackStatus
     _event_key = "groupId"
 

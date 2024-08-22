@@ -56,7 +56,7 @@ class InvalidMessage(SonosException):
 class FailedCommand(SonosException):
     """When a command has failed."""
 
-    def __init__(self, error_code: str, details: str | None) -> None:
+    def __init__(self, error_code: str, details: str | None = None) -> None:
         """Initialize a failed command error."""
         super().__init__(f"Command failed: {details or error_code}")
         self.error_code = error_code
