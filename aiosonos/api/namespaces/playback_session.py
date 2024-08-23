@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Container
+from typing import TYPE_CHECKING
 
 from aiosonos.api.models import SessionStatus, Track
 
 from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackType
+
+if TYPE_CHECKING:
+    from collections.abc import Container
 
 
 class PlaybackSessionNameSpace(SonosNameSpace):

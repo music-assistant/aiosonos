@@ -175,7 +175,8 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         self._ws_client = None
 
     def _handle_incoming_message(
-        self, raw: tuple[ResultMessage, dict[str, Any]]
+        self,
+        raw: tuple[ResultMessage, dict[str, Any]],
     ) -> None:
         """
         Handle incoming message.
@@ -191,7 +192,7 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
                 return
             if future := self._result_futures.get(msg["cmdId"]):
                 future.set_exception(
-                    FailedCommand(msg_data["errorCode"], msg_data.get("reason"))
+                    FailedCommand(msg_data["errorCode"], msg_data.get("reason")),
                 )
             return
 
@@ -255,13 +256,16 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
 
         if self.logger.isEnabledFor(LOG_LEVEL_VERBOSE):
             self.logger.log(
-                LOG_LEVEL_VERBOSE, "Received message:\n%s\n", pprint.pformat(ws_msg)
+                LOG_LEVEL_VERBOSE,
+                "Received message:\n%s\n",
+                pprint.pformat(ws_msg),
             )
 
         return msg
 
     async def _send_message(
-        self, message: tuple[CommandMessage, dict[str, Any]]
+        self,
+        message: tuple[CommandMessage, dict[str, Any]],
     ) -> None:
         """
         Send a message to the server.
@@ -273,7 +277,9 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
 
         if self.logger.isEnabledFor(LOG_LEVEL_VERBOSE):
             self.logger.log(
-                LOG_LEVEL_VERBOSE, "Publishing message:\n%s\n", pprint.pformat(message)
+                LOG_LEVEL_VERBOSE,
+                "Publishing message:\n%s\n",
+                pprint.pformat(message),
             )
 
         assert self._ws_client

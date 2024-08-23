@@ -88,7 +88,7 @@ class SonosLocalApiClient:
 
         Returns function to remove the listener.
 
-        Paramaters:
+        Parameters:
             - cb_func: callback function or coroutine
             - event_filter: Optionally only listen for these events
             - object_id_filter: Optionally only listen for these id's (player id, etc.)
@@ -123,7 +123,8 @@ class SonosLocalApiClient:
         self._household_id = discovery_info["householdId"]
         # Connect to the local websocket API
         self.api = SonosLocalWebSocketsApi(
-            discovery_info["websocketUrl"], self._aiohttp_session
+            discovery_info["websocketUrl"],
+            self._aiohttp_session,
         )
         # NOTE: connect will raise when connecting failed
         await self.api.connect()
@@ -137,7 +138,8 @@ class SonosLocalApiClient:
         listen_task = asyncio.create_task(self.api.start_listening())
         # fetch all initial data and setup subscriptions
         groups_data = await self.api.groups.get_groups(
-            self.household_id, include_device_info=True
+            self.household_id,
+            include_device_info=True,
         )
         for group_data in groups_data["groups"]:
             await self._setup_group(group_data)
@@ -146,9 +148,7 @@ class SonosLocalApiClient:
         # so we ignore all other player objects. For each Sonos player,
         # an individual api connection should be set-up to manage the player.
         # The Cloud API however is able to manage all players in the household.
-        player_data = next(
-            x for x in groups_data["players"] if x["id"] == self._player_id
-        )
+        player_data = next(x for x in groups_data["players"] if x["id"] == self._player_id)
         self._player = player = SonosPlayer(self, player_data)
         await player.async_init()
         # setup global groups/player subscription
@@ -178,7 +178,9 @@ class SonosLocalApiClient:
         the new group will not contain any audio.
         """
         await self.api.groups.create_group(
-            self._household_id, player_ids, music_context_group_id
+            self._household_id,
+            player_ids,
+            music_context_group_id,
         )
 
     def _handle_groups_event(self, groups_data: GroupsData) -> None:
@@ -192,9 +194,7 @@ class SonosLocalApiClient:
             # a new group was added
             self._loop.create_task(self._setup_group(group_data))
         # check if any groups are removed
-        removed_groups = set(self._groups.keys()) - {
-            g["id"] for g in groups_data["groups"]
-        }
+        removed_groups = set(self._groups.keys()) - {g["id"] for g in groups_data["groups"]}
         for group_id in removed_groups:
             group = self._groups.pop(group_id)
             self.signal_event(

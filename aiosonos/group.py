@@ -15,17 +15,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aiosonos.api.models import PlayBackState
 from aiosonos.const import EventType, GroupEvent
 from aiosonos.exceptions import FailedCommand
 
 if TYPE_CHECKING:
-    from aiosonos.api.models import (
-        Container,
-        MetadataStatus,
-        PlayBackState,
-        SessionStatus,
-        Track,
-    )
+    from aiosonos.api.models import Container, MetadataStatus, SessionStatus, Track
     from aiosonos.api.models import GroupVolume as GroupVolumeData
     from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
     from aiosonos.api.models import PlayModes as PlayModesData
@@ -55,9 +50,7 @@ class SonosGroup:
         # grab playback data and setup subscription
         try:
             self._volume_data = await self.client.api.group_volume.get_volume(self.id)
-            self._playback_status_data = (
-                await self.client.api.playback.get_playback_status(self.id)
-            )
+            self._playback_status_data = await self.client.api.playback.get_playback_status(self.id)
             self._playback_actions = PlaybackActions(
                 self._playback_status_data["availablePlaybackActions"],
             )
@@ -68,10 +61,12 @@ class SonosGroup:
                 )
             )
             await self.client.api.playback.subscribe(
-                self.id, self._handle_playback_status_update
+                self.id,
+                self._handle_playback_status_update,
             )
             await self.client.api.group_volume.subscribe(
-                self.id, self._handle_volume_update
+                self.id,
+                self._handle_volume_update,
             )
             await self.client.api.playback_metadata.subscribe(
                 self.id,
@@ -115,7 +110,7 @@ class SonosGroup:
 
     @property
     def player_ids(self) -> list[str]:
-        """Return ths id's of this group's members."""
+        """Return the id's of this group's members."""
         return self._data["playerIds"]
 
     @property
