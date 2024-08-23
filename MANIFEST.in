@@ -1,0 +1,5 @@
+include README.rst
+include LICENSE.md
+graft aiosonos
+recursive-exclude * *.py[co]
+recursive-exclude * *.DS_Store
