@@ -161,8 +161,8 @@ class SonosGroup:
         if session_id := self.active_session_id:
             self.active_session_id = None
             await self.client.api.playback_session.suspend(session_id)
-        else:
-            await self.client.api.playback.pause(self.id)
+            return
+        await self.client.api.playback.pause(self.id)
 
     async def toggle_play_pause(self) -> None:
         """Send play/pause command to group."""
@@ -186,10 +186,10 @@ class SonosGroup:
         """Send setPlayModes command to group."""
         await self.client.api.playback.set_play_modes(
             self.id,
-            crossfade,
-            repeat,
-            repeat_one,
-            shuffle,
+            crossfade=crossfade,
+            repeat=repeat,
+            repeat_one=repeat_one,
+            shuffle=shuffle,
         )
 
     async def seek(self, position: int) -> None:
