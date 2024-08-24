@@ -13,6 +13,7 @@ Reference: https://docs.sonos.com/docs/control
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from aiosonos.api.models import PlayBackState
@@ -44,13 +45,17 @@ class SonosGroup:
         self.client = client
         self.active_session_id: str | None = None
         self._data = data
+        self._playback_status_last_updated: float = 0.0
 
     async def async_init(self) -> None:
         """Handle Async initialization."""
         # grab playback data and setup subscription
         try:
             self._volume_data = await self.client.api.group_volume.get_volume(self.id)
-            self._playback_status_data = await self.client.api.playback.get_playback_status(self.id)
+            self._playback_status_data = (
+                await self.client.api.playback.get_playback_status(self.id)
+            )
+            self._playback_status_last_updated = time.time()
             self._playback_actions = PlaybackActions(
                 self._playback_status_data["availablePlaybackActions"],
             )
@@ -130,7 +135,11 @@ class SonosGroup:
 
     @property
     def position(self) -> float:
-        """Return the current position in (fractions of) seconds."""
+        """Return the (corrected) current position in (fractions of) seconds."""
+        if self.playback_state == PlayBackState.PLAYBACK_STATE_PLAYING:
+            return self._playback_status_data.get("positionMillis", 0) / 1000 + (
+                time.time() - self._playback_status_last_updated
+            )
         return self._playback_status_data.get("positionMillis", 0) / 1000
 
     @property
@@ -318,6 +327,7 @@ class SonosGroup:
         if data == self._playback_status_data:
             return
         self._playback_status_data = data
+        self._playback_status_last_updated = time.time()
         self._playback_actions.raw_data.update(data["availablePlaybackActions"])
         self._play_modes.raw_data.update(data["playModes"])
         self.client.signal_event(
