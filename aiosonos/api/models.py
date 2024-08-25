@@ -305,6 +305,18 @@ class PlaybackStatus(TypedDict):
     previousPositionMillis: int
 
 
+class MusicService(StrEnum):
+    """Enum with (known) possible container service Id's."""
+
+    SPOTIFY = "9"
+    MUSIC_ASSISTANT = "mass"
+    TUNEIN = "303"
+    QOBUZ = "31"
+    YOUTUBE_MUSIC = "284"
+    LOCAL_LIBRARY = "local-library"
+    # TODO: complete this list with other known services
+
+
 class MetadataId(TypedDict):
     """Representation of an ID, used in metadata objects."""
 
@@ -454,6 +466,22 @@ class PlaybackSession(TypedDict):
     clientId: str
     isSuspended: bool
     accountId: str
+
+
+class ContainerType(StrEnum):
+    """Enum with possible container types."""
+
+    LINEIN = "linein"
+    STATION = "station"
+    PLAYLIST = "playlist"
+    AIRPLAY = "linein.airplay"
+    PODCAST = "podcast"
+    BOOK = "book"
+    ARTIST = "artist"
+    ALBUM = "album"
+    ARTIST_LOCAL = "artist.local"
+    ALBUM_LOCAL = "album.local"
+    # TODO: complete this list with other known types
 
 
 class Container(TypedDict):

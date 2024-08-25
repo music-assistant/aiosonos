@@ -14,9 +14,10 @@ Reference: https://docs.sonos.com/docs/control
 from __future__ import annotations
 
 import time
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from aiosonos.api.models import PlayBackState
+from aiosonos.api.models import ContainerType, MusicService, PlayBackState
 from aiosonos.const import EventType, GroupEvent
 from aiosonos.exceptions import FailedCommand
 
@@ -46,6 +47,12 @@ class SonosGroup:
         self.active_session_id: str | None = None
         self._data = data
         self._playback_status_last_updated: float = 0.0
+        self._unsubscribe_callbacks = []
+
+    def __del__(self) -> None:
+        """Handle deletion."""
+        for unsubscribe_callback in self._unsubscribe_callbacks:
+            unsubscribe_callback()
 
     async def async_init(self) -> None:
         """Handle Async initialization."""
@@ -65,18 +72,20 @@ class SonosGroup:
                     self.id,
                 )
             )
-            await self.client.api.playback.subscribe(
-                self.id,
-                self._handle_playback_status_update,
-            )
-            await self.client.api.group_volume.subscribe(
-                self.id,
-                self._handle_volume_update,
-            )
-            await self.client.api.playback_metadata.subscribe(
-                self.id,
-                self._handle_metadata_status_update,
-            )
+            self._unsubscribe_callbacks = [
+                await self.client.api.playback.subscribe(
+                    self.id,
+                    self._handle_playback_status_update,
+                ),
+                await self.client.api.group_volume.subscribe(
+                    self.id,
+                    self._handle_volume_update,
+                ),
+                await self.client.api.playback_metadata.subscribe(
+                    self.id,
+                    self._handle_metadata_status_update,
+                ),
+            ]
         except FailedCommand as err:
             if err.error_code == "groupCoordinatorChanged":
                 # retrieving group details is not possible for remote groups when
@@ -152,6 +161,32 @@ class SonosGroup:
         """Return the play modes of this group."""
         return self._play_modes
 
+    @property
+    def container_type(self) -> ContainerType | None:
+        """Return the container_type of the active source of this group (if any)."""
+        if not (container := self._playback_metadata_data.get("container")):
+            return None
+        if container_type := container.get("type"):
+            if container_type in ContainerType:
+                return ContainerType(container_type)
+            # return the raw string value if it's not a known container type
+            return container_type
+        return None
+
+    @property
+    def active_service(self) -> MusicService | None:
+        """Return the active service of the active source of this group (if any)."""
+        if not (container := self._playback_metadata_data.get("container")):
+            return None
+        if (container_id := container.get("id")) and (
+            service_id := container_id.get("serviceId")
+        ):
+            if service_id in MusicService:
+                return MusicService(service_id)
+            # return the raw string value if it's not a known container type
+            return service_id
+        return None
+
     async def play(self) -> None:
         """Send play command to group."""
         await self.client.api.playback.play(self.id)
@@ -164,8 +199,12 @@ class SonosGroup:
         """Send stop command to group."""
         if session_id := self.active_session_id:
             self.active_session_id = None
-            await self.client.api.playback_session.suspend(session_id)
-            return
+            with suppress(FailedCommand):
+                await self.client.api.playback_session.suspend(session_id)
+                return
+        # always fall back to pause if no session is active
+        # TODO: figure out if there is some better way to figure out
+        # the active session id to suspend it.
         await self.client.api.playback.pause(self.id)
 
     async def toggle_play_pause(self) -> None:
@@ -269,8 +308,7 @@ class SonosGroup:
 
     async def play_stream_url(self, url: str, metadata: Container) -> None:
         """Create a new playback session and start playing a single (radio) stream URL."""
-        if not self.active_session_id:
-            await self.create_playback_session()
+        await self.create_playback_session()
         await self.client.api.playback_session.load_stream_url(
             self.active_session_id,
             stream_url=url,
