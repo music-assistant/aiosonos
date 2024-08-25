@@ -16,8 +16,8 @@ from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackTyp
 class AudioClipNameSpace(SonosNameSpace):
     """AudioClip Namespace handlers."""
 
-    namespace = "audioclip"
-    event_type = "audioclip"
+    namespace = "audioClip"
+    event_type = "audioClip"
     _event_model = AudioClipStatusEvent
     _event_key = "playerId"
 

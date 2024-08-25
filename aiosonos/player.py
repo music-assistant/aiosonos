@@ -34,7 +34,9 @@ class SonosPlayer:
         """Handle Async initialization."""
         # grab volume data and setup subscription
         self._volume_data = await self.client.api.player_volume.get_volume(self.id)
-        await self.client.api.player_volume.subscribe(self.id, self._handle_volume_update)
+        await self.client.api.player_volume.subscribe(
+            self.id, self._handle_volume_update
+        )
 
     @property
     def name(self) -> str:
@@ -86,7 +88,9 @@ class SonosPlayer:
         """Return the player ids of the group members."""
         return self.group.player_ids
 
-    async def set_volume(self, volume: int | None = None, muted: bool | None = None) -> None:
+    async def set_volume(
+        self, volume: int | None = None, muted: bool | None = None
+    ) -> None:
         """Set the volume of the player."""
         await self.client.api.player_volume.set_volume(self.id, volume, muted)
 
@@ -110,13 +114,15 @@ class SonosPlayer:
             player_ids_to_remove=[],
         )
 
-    async def play_audio_clip(self, url: str, volume: int | None = None) -> None:
+    async def play_audio_clip(
+        self, url: str, volume: int | None = None, name: str | None = None
+    ) -> None:
         """Play an audio clip (announcement) on the player."""
         await self.client.api.audio_clip.load_audio_clip(
             self.id,
-            url,
-            name=url,
+            name=name or "aiosonos",
             app_id="aiosonos",
+            stream_url=url,
             volume=volume,
             clip_type=AudioClipType.CUSTOM,
             clip_led_behavior=AudioClipLEDBehavior.WHITE_LED_QUICK_BREATHING,
