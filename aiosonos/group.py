@@ -22,10 +22,12 @@ from aiosonos.const import EventType, GroupEvent
 from aiosonos.exceptions import FailedCommand
 
 if TYPE_CHECKING:
-    from aiosonos.api.models import Container, MetadataStatus, SessionStatus, Track
+    from aiosonos.api.models import Container
     from aiosonos.api.models import GroupVolume as GroupVolumeData
+    from aiosonos.api.models import MetadataStatus
     from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
     from aiosonos.api.models import PlayModes as PlayModesData
+    from aiosonos.api.models import SessionStatus, Track
 
     from .api.models import Group as GroupData
     from .api.models import PlaybackActions as PlaybackActionsData
@@ -49,19 +51,18 @@ class SonosGroup:
         self._playback_status_last_updated: float = 0.0
         self._unsubscribe_callbacks = []
 
-    def __del__(self) -> None:
-        """Handle deletion."""
+    def cleanup(self) -> None:
+        """Handle cleanup on deletion."""
         for unsubscribe_callback in self._unsubscribe_callbacks:
             unsubscribe_callback()
+        self._unsubscribe_callbacks = []
 
     async def async_init(self) -> None:
         """Handle Async initialization."""
         # grab playback data and setup subscription
         try:
             self._volume_data = await self.client.api.group_volume.get_volume(self.id)
-            self._playback_status_data = (
-                await self.client.api.playback.get_playback_status(self.id)
-            )
+            self._playback_status_data = await self.client.api.playback.get_playback_status(self.id)
             self._playback_status_last_updated = time.time()
             self._playback_actions = PlaybackActions(
                 self._playback_status_data["availablePlaybackActions"],
@@ -97,6 +98,14 @@ class SonosGroup:
                 self._playback_metadata_data = {}
                 return
             raise
+        else:
+            self.client.signal_event(
+                GroupEvent(
+                    EventType.GROUP_ADDED,
+                    self.id,
+                    self,
+                ),
+            )
 
     @property
     def name(self) -> str:
@@ -178,9 +187,7 @@ class SonosGroup:
         """Return the active service of the active source of this group (if any)."""
         if not (container := self._playback_metadata_data.get("container")):
             return None
-        if (container_id := container.get("id")) and (
-            service_id := container_id.get("serviceId")
-        ):
+        if (container_id := container.get("id")) and (service_id := container_id.get("serviceId")):
             if service_id in MusicService:
                 return MusicService(service_id)
             # return the raw string value if it's not a known container type

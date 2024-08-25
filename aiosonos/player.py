@@ -35,7 +35,8 @@ class SonosPlayer:
         # grab volume data and setup subscription
         self._volume_data = await self.client.api.player_volume.get_volume(self.id)
         await self.client.api.player_volume.subscribe(
-            self.id, self._handle_volume_update
+            self.id,
+            self._handle_volume_update,
         )
 
     @property
@@ -89,7 +90,9 @@ class SonosPlayer:
         return self.group.player_ids
 
     async def set_volume(
-        self, volume: int | None = None, muted: bool | None = None
+        self,
+        volume: int | None = None,
+        muted: bool | None = None,
     ) -> None:
         """Set the volume of the player."""
         await self.client.api.player_volume.set_volume(self.id, volume, muted)
@@ -115,7 +118,10 @@ class SonosPlayer:
         )
 
     async def play_audio_clip(
-        self, url: str, volume: int | None = None, name: str | None = None
+        self,
+        url: str,
+        volume: int | None = None,
+        name: str | None = None,
     ) -> None:
         """Play an audio clip (announcement) on the player."""
         await self.client.api.audio_clip.load_audio_clip(
@@ -130,12 +136,8 @@ class SonosPlayer:
 
     def update_data(self, data: PlayerData) -> None:
         """Update the player data."""
-        cur_group_id = self.group.id
-        for group in self.client.groups:
-            if group.coordinator_id == self.id or self.id in group.player_ids:
-                self._active_group = group
-                break
-        if data == self._data and cur_group_id == self._active_group.id:
+        self.check_active_group()
+        if data == self._data:
             return
         for key, value in data.items():
             self._data[key] = value
@@ -143,6 +145,23 @@ class SonosPlayer:
             PlayerEvent(
                 EventType.PLAYER_UPDATED,
                 data.get("id", self.id),
+                self,
+            ),
+        )
+
+    def check_active_group(self) -> None:
+        """Check/set the active group of this player."""
+        prev_group_id = self.group.id
+        for group in self.client.groups:
+            if group.coordinator_id == self.id or self.id in group.player_ids:
+                self._active_group = group
+                break
+        if prev_group_id == self.group.id:
+            return
+        self.client.signal_event(
+            PlayerEvent(
+                EventType.PLAYER_UPDATED,
+                self.id,
                 self,
             ),
         )

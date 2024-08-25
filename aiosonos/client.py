@@ -45,7 +45,7 @@ class SonosLocalApiClient:
     _loop = asyncio.BaseEventLoop
     _household_id: str = ""
     _player_id: str
-    _player: SonosPlayer
+    _player: SonosPlayer | None = None
 
     def __init__(self, player_ip: str, aiohttp_session: ClientSession) -> None:
         """Initialize the Sonos API client."""
@@ -215,6 +215,10 @@ class SonosLocalApiClient:
         group = SonosGroup(self, group_data)
         self._groups[group.id] = group
         await group.async_init()
+        # always let the player check if the group changed,
+        # as this might have been the active group
+        if self._player:
+            self._player.check_active_group()
         self.signal_event(
             GroupEvent(
                 EventType.GROUP_ADDED,
