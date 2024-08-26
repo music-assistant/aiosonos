@@ -17,37 +17,62 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from aiosonos.api.models import ContainerType, MusicService, PlayBackState
+from aiosonos.api.models import (
+    ContainerType,
+    MetadataStatus,
+    MusicService,
+    PlayBackState,
+)
+from aiosonos.api.models import GroupVolume as GroupVolumeData
+from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
+from aiosonos.api.models import PlayModes as PlayModesData
 from aiosonos.const import EventType, GroupEvent
 from aiosonos.exceptions import FailedCommand
 
+from .api.models import PlaybackActions as PlaybackActionsData
+
 if TYPE_CHECKING:
-    from aiosonos.api.models import Container
-    from aiosonos.api.models import GroupVolume as GroupVolumeData
-    from aiosonos.api.models import MetadataStatus
-    from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
-    from aiosonos.api.models import PlayModes as PlayModesData
-    from aiosonos.api.models import SessionStatus, Track
+    from aiosonos.api.models import Container, SessionStatus, Track
 
     from .api.models import Group as GroupData
-    from .api.models import PlaybackActions as PlaybackActionsData
     from .client import SonosLocalApiClient
 
 
 class SonosGroup:
     """Representation of a Sonos Group."""
 
-    _playback_status_data: PlaybackStatusData
-    _playback_metadata_data: MetadataStatus
-    _volume_data: GroupVolumeData
-    _playback_actions: PlaybackActions
-    _play_modes: PlayModes
-
     def __init__(self, client: SonosLocalApiClient, data: GroupData) -> None:
         """Handle initialization."""
         self.client = client
         self.active_session_id: str | None = None
         self._data = data
+        # to prevent race conditions at startup/init,
+        # we set some default values for the status dicts here
+        self._play_modes = PlayModes({})
+        self._volume_data = GroupVolumeData(
+            objectType="groupVolume", fixed=False, volume=0, mute=False
+        )
+        self._playback_actions = playback_actions = PlaybackActionsData(
+            canCrossfade=False,
+            canPause=False,
+            canPlay=False,
+            canSeek=False,
+            canSkipBackward=False,
+            canSkipForward=False,
+            canStop=False,
+        )
+        self._playback_status_data: PlaybackStatusData = PlaybackStatusData(
+            objectType="playbackStatus",
+            availablePlaybackActions=playback_actions,
+            isDucking=False,
+            playbackState=PlayBackState.PLAYBACK_STATE_IDLE,
+            playModes=PlayModesData(),
+            positionMillis=0,
+            previousPositionMillis=0,
+        )
+        self._playback_metadata_data: MetadataStatus = MetadataStatus(
+            objectType="metadataStatus"
+        )
         self._playback_status_last_updated: float = 0.0
         self._unsubscribe_callbacks = []
 
@@ -62,7 +87,9 @@ class SonosGroup:
         # grab playback data and setup subscription
         try:
             self._volume_data = await self.client.api.group_volume.get_volume(self.id)
-            self._playback_status_data = await self.client.api.playback.get_playback_status(self.id)
+            self._playback_status_data = (
+                await self.client.api.playback.get_playback_status(self.id)
+            )
             self._playback_status_last_updated = time.time()
             self._playback_actions = PlaybackActions(
                 self._playback_status_data["availablePlaybackActions"],
@@ -187,7 +214,9 @@ class SonosGroup:
         """Return the active service of the active source of this group (if any)."""
         if not (container := self._playback_metadata_data.get("container")):
             return None
-        if (container_id := container.get("id")) and (service_id := container_id.get("serviceId")):
+        if (container_id := container.get("id")) and (
+            service_id := container_id.get("serviceId")
+        ):
             if service_id in MusicService:
                 return MusicService(service_id)
             # return the raw string value if it's not a known container type

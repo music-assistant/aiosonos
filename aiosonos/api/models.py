@@ -3,6 +3,7 @@ Models/schemas for objects in the Sonos HTTP/Websockets API.
 
 Reference: https://docs.sonos.com/docs/types
 """
+
 from __future__ import annotations
 
 from enum import StrEnum
