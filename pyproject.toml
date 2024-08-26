@@ -135,8 +135,10 @@ ignore = [
   "S101", # assert is often used to satisfy type checking
   "TD002", # Just annoying, not really useful
   "TD003", # Just annoying, not really useful
-  "TD004", # Just annoying, not really useful  # Conflicts with the Ruff formatter
+  "TD004", # Just annoying, not really useful
   "TRY003", # Just annoying, not really useful
+  "COM812", # Conflicts with the Ruff formatter
+  "ISC001", # Conflicts with the Ruff formatter
 ]
 
 select = ["ALL"]

@@ -70,9 +70,7 @@ class SonosGroup:
             positionMillis=0,
             previousPositionMillis=0,
         )
-        self._playback_metadata_data: MetadataStatus = MetadataStatus(
-            objectType="metadataStatus"
-        )
+        self._playback_metadata_data: MetadataStatus = MetadataStatus(objectType="metadataStatus")
         self._playback_status_last_updated: float = 0.0
         self._unsubscribe_callbacks = []
 
@@ -87,9 +85,7 @@ class SonosGroup:
         # grab playback data and setup subscription
         try:
             self._volume_data = await self.client.api.group_volume.get_volume(self.id)
-            self._playback_status_data = (
-                await self.client.api.playback.get_playback_status(self.id)
-            )
+            self._playback_status_data = await self.client.api.playback.get_playback_status(self.id)
             self._playback_status_last_updated = time.time()
             self._playback_actions = PlaybackActions(
                 self._playback_status_data["availablePlaybackActions"],
@@ -214,9 +210,7 @@ class SonosGroup:
         """Return the active service of the active source of this group (if any)."""
         if not (container := self._playback_metadata_data.get("container")):
             return None
-        if (container_id := container.get("id")) and (
-            service_id := container_id.get("serviceId")
-        ):
+        if (container_id := container.get("id")) and (service_id := container_id.get("serviceId")):
             if service_id in MusicService:
                 return MusicService(service_id)
             # return the raw string value if it's not a known container type
