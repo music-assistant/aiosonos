@@ -62,7 +62,7 @@ class SonosPlayer:
     @property
     def volume_muted(self) -> bool | None:
         """Return the current mute state of the player."""
-        return self._volume_data.get("mute")
+        return self._volume_data.get("muted")
 
     @property
     def has_fixed_volume(self) -> bool | None:
