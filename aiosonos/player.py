@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 class SonosPlayer:
     """Representation of a Sonos Player."""
 
-    _active_group: SonosGroup
+    _active_group: SonosGroup | None
 
     def __init__(self, client: SonosLocalApiClient, data: PlayerData) -> None:
         """Handle initialization."""
@@ -29,6 +29,8 @@ class SonosPlayer:
             if group.coordinator_id == self.id or self.id in group.player_ids:
                 self._active_group = group
                 break
+        else:
+            self._active_group = None
 
     async def async_init(self) -> None:
         """Handle Async initialization."""
@@ -70,23 +72,29 @@ class SonosPlayer:
         return self._volume_data.get("fixed")
 
     @property
-    def group(self) -> SonosGroup:
+    def group(self) -> SonosGroup | None:
         """Return the active group."""
         return self._active_group
 
     @property
     def is_coordinator(self) -> bool:
         """Return if this player is the coordinator of the active group it belongs to."""
+        if not self.group:
+            return False
         return self.group.coordinator_id == self.id
 
     @property
     def is_passive(self) -> bool:
         """Return if this player is the NOT a coordinator but a passive member of a group."""
+        if not self.group:
+            return False
         return self.group.coordinator_id != self.id
 
     @property
     def group_members(self) -> list[str]:
         """Return the player ids of the group members."""
+        if not self.group:
+            return []
         return self.group.player_ids
 
     async def set_volume(
@@ -103,6 +111,8 @@ class SonosPlayer:
 
     async def leave_group(self) -> None:
         """Leave the active group this player is joined to (if any)."""
+        if not self.group:
+            return
         await self.client.api.groups.modify_group_members(
             self.group.id,
             player_ids_to_add=[],
@@ -151,7 +161,7 @@ class SonosPlayer:
 
     def check_active_group(self) -> None:
         """Check/set the active group of this player."""
-        prev_group_id = self.group.id
+        prev_group_id = self._active_group.id if self._active_group else None
         for group in self.client.groups:
             if group.coordinator_id == self.id or self.id in group.player_ids:
                 self._active_group = group
