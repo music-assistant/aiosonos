@@ -7,5 +7,6 @@ but also locally on every Sonos speaker.
 API Reference can be found here:
 https://docs.sonos.com/reference
 """
+
 from ._base import AbstractSonosApi  # noqa: F401
 from .websockets import SonosLocalWebSocketsApi  # noqa: F401
