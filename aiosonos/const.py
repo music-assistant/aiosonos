@@ -1,4 +1,5 @@
 """Constants/Models for the SonosApiClient."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

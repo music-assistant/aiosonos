@@ -52,10 +52,13 @@ if __name__ == "__main__":
     async def run_client() -> None:
         """Run the SonosApi client."""
         # run the client
-        async with ClientSession() as session, SonosLocalApiClient(
-            args.player_ip,
-            session,
-        ) as client:
+        async with (
+            ClientSession() as session,
+            SonosLocalApiClient(
+                args.player_ip,
+                session,
+            ) as client,
+        ):
             # subscribe to all events to simply log them
             client.subscribe(on_event)
             # start listening
