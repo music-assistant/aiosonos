@@ -188,7 +188,7 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         # handle error message
         if "errorCode" in msg_data:
             if "cmdId" not in msg:
-                self.logger.error("Received error message without cmdId: %s, msg_data=%s", msg, msg_data)
+                self.logger.error("Received unhandled error: %s: %s", msg, msg_data)
                 return
             if future := self._result_futures.get(msg["cmdId"]):
                 future.set_exception(
