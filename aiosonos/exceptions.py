@@ -61,7 +61,3 @@ class FailedCommand(SonosException):
         super().__init__(f"Command failed: {details or error_code}")
         self.error_code = error_code
         self.details = details
-
-
-class AlreadySubscribed(SonosException):
-    """Raised when trying to subscribe to a target for which a subscription already exists."""

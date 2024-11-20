@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
-
-from aiosonos.exceptions import AlreadySubscribed
 
 if TYPE_CHECKING:
     from aiosonos.api import SonosLocalWebSocketsApi
@@ -14,6 +13,8 @@ _T = TypeVar("_T")
 
 SubscribeCallbackType = Callable[[_T], None]
 UnsubscribeCallbackType = Callable[[], None]
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class SonosNameSpace:
@@ -42,8 +43,7 @@ class SonosNameSpace:
     ) -> UnsubscribeCallbackType:
         """Handle subscription logic."""
         if event_id in self._listeners:
-            err_msg = f"Already subscribed to {event_id}"
-            raise AlreadySubscribed(err_msg)
+            _LOGGER.error("Duplicate subscription detected for %s", event_id)
         await self.api.send_command(
             namespace=self.namespace,
             command="subscribe",
