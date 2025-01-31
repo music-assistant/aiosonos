@@ -144,6 +144,10 @@ class SonosPlayer:
             clip_led_behavior=AudioClipLEDBehavior.WHITE_LED_QUICK_BREATHING,
         )
 
+    async def load_home_theater_playback(self) -> None:
+        """Load Home Theater playback."""
+        await self.client.api.home_theater.load_home_theater_playback(self.id)
+
     def update_data(self, data: PlayerData) -> None:
         """Update the player data."""
         self.check_active_group()

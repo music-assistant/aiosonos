@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from aiosonos.api.models import PlaybackStatus, PlayModes
+from aiosonos.api.models import LoadContentRequest, PlaybackStatus, PlayModes
 
 from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackType
 
@@ -59,6 +59,16 @@ class PlaybackNameSpace(SonosNameSpace):
             command="loadLineIn",
             groupId=group_id,
             options=options,
+        )
+
+    async def load_content(
+        self,
+        group_id: str,
+        content: LoadContentRequest,
+    ) -> None:
+        """Load content on the existing group's queue."""
+        await self.api.send_command(
+            namespace=self.namespace, command="loadContent", groupId=group_id, options=content
         )
 
     async def pause(

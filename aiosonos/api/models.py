@@ -162,6 +162,7 @@ class SonosCapability(StrEnum):
     VOICE = "VOICE"
     AUDIO_CLIP = "AUDIO_CLIP"
     MICROPHONE_SWITCH = "MICROPHONE_SWITCH"
+    HT_PLAYBACK = "HT_PLAYBACK"
 
 
 class Group(TypedDict):
@@ -482,6 +483,9 @@ class ContainerType(StrEnum):
     ALBUM = "album"
     ARTIST_LOCAL = "artist.local"
     ALBUM_LOCAL = "album.local"
+    HOME_THEATER_SPDIF = "linein.homeTheater.spdif"
+    HOME_THEATER_HDMI = "linein.homeTheater.hdmi"
+
     # TODO: complete this list with other known types
 
 
@@ -564,3 +568,30 @@ class SessionStatus(TypedDict):
     sessionState: str  # SESSION_STATE_CONNECTED
     sessionCreated: bool
     customData: str
+
+
+class LoadContentRequest(TypedDict):
+    """
+    Representation of a playback content request.
+
+    Sent when requesting the player(queue) to load content.
+
+    example load spotify playlist:
+    {
+        "type": "PLAYLIST",
+        "id": {
+            "objectId": "spotify:playlist:5lH9NjOeJvctAO92ZrKQNB",
+            "accountId": "sn_3",
+            "serviceId": "9"
+        },
+        "playbackAction": "PLAY",
+        "playModes": {
+            "shuffle": false
+        }
+    }
+    """
+
+    type: str
+    id: MetadataId
+    playbackAction: str
+    playModes: NotRequired[PlayModes]

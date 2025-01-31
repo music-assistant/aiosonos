@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Self
 from aiosonos.api.namespaces.audio_clip import AudioClipNameSpace
 from aiosonos.api.namespaces.group_volume import GroupVolumeNameSpace
 from aiosonos.api.namespaces.groups import GroupsNameSpace
+from aiosonos.api.namespaces.home_theater import HomeTheaterNameSpace
 from aiosonos.api.namespaces.playback import PlaybackNameSpace
 from aiosonos.api.namespaces.playback_metadata import PlaybackMetadataNameSpace
 from aiosonos.api.namespaces.playback_session import PlaybackSessionNameSpace
@@ -38,6 +39,7 @@ class AbstractSonosApi:
         self._playback_metadata = PlaybackMetadataNameSpace(self)
         self._playback_session = PlaybackSessionNameSpace(self)
         self._player_volume = PlayerVolumeNameSpace(self)
+        self._home_theater = HomeTheaterNameSpace(self)
         self._tracked_tasks: dict[str, asyncio.Task] = {}
 
     @property
@@ -79,6 +81,11 @@ class AbstractSonosApi:
     def player_volume(self) -> PlayerVolumeNameSpace:
         """Return PlayerVolume namespace handler."""
         return self._player_volume
+
+    @property
+    def home_theater(self) -> HomeTheaterNameSpace:
+        """Return HomeTheater namespace handler."""
+        return self._home_theater
 
     @abstractmethod
     async def send_command(

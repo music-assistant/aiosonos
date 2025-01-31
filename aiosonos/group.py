@@ -17,12 +17,7 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from aiosonos.api.models import (
-    ContainerType,
-    MetadataStatus,
-    MusicService,
-    PlayBackState,
-)
+from aiosonos.api.models import ContainerType, MetadataStatus, MusicService, PlayBackState
 from aiosonos.api.models import GroupVolume as GroupVolumeData
 from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
 from aiosonos.api.models import PlayModes as PlayModesData
@@ -227,15 +222,17 @@ class SonosGroup:
 
     async def stop(self) -> None:
         """Send stop command to group."""
-        if session_id := self.active_session_id:
-            self.active_session_id = None
+        try:
+            # always first attempt to suspend the active session
+            await self.client.api.playback_session.suspend(self.active_session_id)
+        except FailedCommand:
+            # this turns out the best way to clear the queue,
+            # just send an invalid uri and it will clear the queue
+            # and stop any playing content, including linein sources
             with suppress(FailedCommand):
-                await self.client.api.playback_session.suspend(session_id)
-                return
-        # always fall back to pause if no session is active
-        # TODO: figure out if there is some better way to figure out
-        # the active session id to suspend it.
-        await self.client.api.playback.pause(self.id)
+                await self.play_stream_url("clear", None)
+        finally:
+            self.active_session_id = None
 
     async def toggle_play_pause(self) -> None:
         """Send play/pause command to group."""
