@@ -58,7 +58,7 @@ class GroupVolumeNameSpace(SonosNameSpace):
     async def set_mute(
         self,
         group_id: str,
-        muted: bool,  # noqa: FBT001
+        muted: bool,
     ) -> None:
         """
         Send the setMute command to set the group's mute state.

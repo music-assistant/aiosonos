@@ -85,7 +85,7 @@ class PlayerVolumeNameSpace(SonosNameSpace):
     async def set_mute(
         self,
         player_id: str,
-        muted: bool,  # noqa: FBT001
+        muted: bool,
     ) -> None:
         """
         Send the setMute command to set the player's mute state.

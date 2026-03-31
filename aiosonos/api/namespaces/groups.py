@@ -64,7 +64,7 @@ class GroupsNameSpace(SonosNameSpace):
     async def get_groups(
         self,
         household_id: str,
-        include_device_info: bool = False,  # noqa: FBT001, FBT002
+        include_device_info: bool = False,  # noqa: FBT002
     ) -> Groups:
         """
         Get all groups (and players) in a household.

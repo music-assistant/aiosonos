@@ -38,7 +38,7 @@ class PlaybackNameSpace(SonosNameSpace):
         self,
         group_id: str,
         device_id: str | None = None,
-        play_on_completion: bool = False,  # noqa: FBT001, FBT002
+        play_on_completion: bool = False,  # noqa: FBT002
     ) -> None:
         """
         Send getPlaybackStatus command to group.

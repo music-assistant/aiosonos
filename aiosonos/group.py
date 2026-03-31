@@ -273,7 +273,7 @@ class SonosGroup:
     async def load_line_in(
         self,
         device_id: str | None = None,
-        play_on_completion: bool = False,  # noqa: FBT001, FBT002
+        play_on_completion: bool = False,  # noqa: FBT002
     ) -> None:
         """
         Send loadLineIn command to group.
