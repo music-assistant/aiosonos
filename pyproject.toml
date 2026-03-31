@@ -123,7 +123,6 @@ asyncio_mode = "auto"
 ignore = [
   "ANN002", # Just annoying, not really useful
   "ANN003", # Just annoying, not really useful
-  "ANN101", # Self... explanatory
   "ANN401", # Opinioated warning on disallowing dynamically typed expressions
   "D203", # Conflicts with other rules
   "D213", # Conflicts with other rules
