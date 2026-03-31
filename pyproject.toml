@@ -25,9 +25,9 @@ speedups = [
 test = [
   "codespell==2.4.1",
   "mypy==1.18.2",
-  "pre-commit==4.2.0",
-  "pre-commit-hooks==5.0.0",
-  "pytest==8.4.1",
+  "pre-commit-hooks==6.0.0",
+  "pre-commit==4.3.0",
+  "pytest==8.4.2",
   "pytest-aiohttp==1.1.0",
   "pytest-cov==6.2.1",
   "ruff==0.11.2",
@@ -123,7 +123,6 @@ asyncio_mode = "auto"
 ignore = [
   "ANN002", # Just annoying, not really useful
   "ANN003", # Just annoying, not really useful
-  "ANN101", # Self... explanatory
   "ANN401", # Opinioated warning on disallowing dynamically typed expressions
   "D203", # Conflicts with other rules
   "D213", # Conflicts with other rules
