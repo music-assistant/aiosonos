@@ -333,6 +333,8 @@ class Service(TypedDict):
 
     _objectType: str  # = service
     name: str
+    id: NotRequired[str]
+    imageUrl: NotRequired[str]
     images: NotRequired[list[Image]]
 
 
@@ -504,6 +506,7 @@ class Container(TypedDict):
     _objectType: str  # = container
     name: str
     type: str
+    imageUrl: NotRequired[str]
     id: NotRequired[MetadataId]
     service: NotRequired[Service]
     images: NotRequired[list[Image]]
