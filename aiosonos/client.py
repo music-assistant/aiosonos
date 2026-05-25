@@ -191,7 +191,15 @@ class SonosLocalApiClient:
                 # existing group object
                 self._groups[group_data["id"]].update_data(group_data)
                 continue
-            # a new group was added
+            # A new group was added. Register it in self._groups synchronously
+            # *now*, before scheduling _setup_group: if another event for the
+            # same group_id is delivered before the task gets a chance to run,
+            # we want that second event to take the update_data() branch above
+            # rather than queue a duplicate _setup_group task. Two concurrent
+            # setups would each call .subscribe() for the same id and the
+            # second one would overwrite the first listener, leaving the group
+            # with no working callbacks.
+            self._groups[group_data["id"]] = SonosGroup(self, group_data)
             self._loop.create_task(self._setup_group(group_data))
         # check if any groups are removed
         removed_groups = set(self._groups.keys()) - {g["id"] for g in groups_data["groups"]}
@@ -212,8 +220,14 @@ class SonosLocalApiClient:
 
     async def _setup_group(self, group_data: GroupData) -> None:
         """Register/setup a (new) group."""
-        group = SonosGroup(self, group_data)
-        self._groups[group.id] = group
+        # When called from _handle_groups_event the SonosGroup has already been
+        # registered in self._groups (see comment there). The fallback path
+        # below covers the start_listening() bootstrap, which calls us directly
+        # with no prior event.
+        group = self._groups.get(group_data["id"])
+        if group is None:
+            group = SonosGroup(self, group_data)
+            self._groups[group.id] = group
         await group.async_init()
         # always let the player check if the group changed,
         # as this might have been the active group
