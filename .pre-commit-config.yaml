@@ -1,6 +1,16 @@
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
   - repo: local
     hooks:
+      - id: action-pins
+        name: 🔒 Check GitHub Actions refs are immutable
+        language: system
+        entry: scripts/run-in-env.sh python3 scripts/check_action_pins.py
+        pass_filenames: false
+        stages: [pre-commit, pre-push, manual]
       - id: ruff-check
         name: 🐶 Ruff Linter
         language: system
