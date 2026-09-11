@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from aiosonos.api.models import LoadContentRequest, PlaybackStatus, PlayModes
+from typing import TYPE_CHECKING, Any
+
+from aiosonos.api.models import LoadContentRequest, PlaybackError, PlaybackStatus, PlayModes
 
 from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackType
+
+if TYPE_CHECKING:
+    from aiosonos.api import SonosLocalWebSocketsApi
 
 
 class PlaybackNameSpace(SonosNameSpace):
@@ -12,8 +17,14 @@ class PlaybackNameSpace(SonosNameSpace):
 
     namespace = "playback"
     event_type = "playbackStatus"
+    error_event_type = "playbackError"
     _event_model = PlaybackStatus
     _event_key = "groupId"
+
+    def __init__(self, api: SonosLocalWebSocketsApi) -> None:
+        """Handle Initialization."""
+        super().__init__(api)
+        self._error_listeners: dict[str, SubscribeCallbackType[PlaybackError]] = {}
 
     async def get_playback_status(
         self,
@@ -258,14 +269,31 @@ class PlaybackNameSpace(SonosNameSpace):
     async def subscribe(
         self,
         group_id: str,
-        callback: SubscribeCallbackType,
+        callback: SubscribeCallbackType[PlaybackStatus],
+        error_callback: SubscribeCallbackType[PlaybackError] | None = None,
     ) -> UnsubscribeCallbackType:
         """
-        Subscribe to events in the PlaybackStatus namespace for given player.
+        Subscribe to events in the Playback namespace for given group.
 
+        The optional error_callback receives playbackError events,
+        sent when the group fails to play an item.
         Returns handle to unsubscribe.
 
         Reference:
         https://docs.sonos.com/reference/playback-subscribe-groupid
         """
-        return await self._handle_subscribe(group_id, callback)
+        unsubscribe = await self._handle_subscribe(group_id, callback)
+        if error_callback is None:
+            return unsubscribe
+        self._error_listeners[group_id] = error_callback
+
+        def _unsubscribe() -> None:
+            self._error_listeners.pop(group_id, None)
+            unsubscribe()
+
+        return _unsubscribe
+
+    async def _handle_error_event(self, event: dict[str, Any], event_data: PlaybackError) -> None:
+        """Forward a playbackError event to the subscribed error listener."""
+        if handler := self._error_listeners.get(event[self._event_key]):
+            handler(event_data)

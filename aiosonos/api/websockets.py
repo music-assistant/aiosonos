@@ -187,13 +187,16 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
 
         # handle error message
         if "errorCode" in msg_data:
-            if "cmdId" not in msg:
-                self.logger.error("Received unhandled error: %s: %s", msg, msg_data)
+            if "cmdId" in msg:
+                if future := self._result_futures.get(msg["cmdId"]):
+                    future.set_exception(
+                        FailedCommand(msg_data["errorCode"], msg_data.get("reason")),
+                    )
                 return
-            if future := self._result_futures.get(msg["cmdId"]):
-                future.set_exception(
-                    FailedCommand(msg_data["errorCode"], msg_data.get("reason")),
-                )
+            # unsolicited error event, sent to a namespace subscription
+            self.logger.debug("Received error event: %s: %s", msg, msg_data)
+            if msg.get("type") == self._playback.error_event_type:
+                self.create_task(self._playback._handle_error_event(msg, msg_data))  # noqa: SLF001
             return
 
         # handle command result message
