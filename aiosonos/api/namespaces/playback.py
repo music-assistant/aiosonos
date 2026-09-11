@@ -277,6 +277,7 @@ class PlaybackNameSpace(SonosNameSpace):
 
         The optional error_callback receives playbackError events,
         sent when the group fails to play an item.
+
         Returns handle to unsubscribe.
 
         Reference:
@@ -284,8 +285,9 @@ class PlaybackNameSpace(SonosNameSpace):
         """
         unsubscribe = await self._handle_subscribe(group_id, callback)
         if error_callback is None:
-            return unsubscribe
-        self._error_listeners[group_id] = error_callback
+            self._error_listeners.pop(group_id, None)
+        else:
+            self._error_listeners[group_id] = error_callback
 
         def _unsubscribe() -> None:
             self._error_listeners.pop(group_id, None)
