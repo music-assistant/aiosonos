@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from .api.models import PlaybackError
     from .group import SonosGroup
     from .player import SonosPlayer
 
@@ -24,6 +25,7 @@ class EventType(StrEnum):
     PLAYER_ADDED = "player_added"
     PLAYER_UPDATED = "player_updated"
     PLAYER_REMOVED = "player_removed"
+    PLAYBACK_ERROR = "playback_error"
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"
 
@@ -54,4 +56,11 @@ class GroupEvent(SonosEventBase):
     data: SonosGroup
 
 
-SonosEvent = PlayerEvent | GroupEvent
+@dataclass
+class PlaybackErrorEvent(SonosEventBase):
+    """Representation of an Event emitted when a group failed to play an item."""
+
+    data: PlaybackError
+
+
+SonosEvent = PlayerEvent | GroupEvent | PlaybackErrorEvent

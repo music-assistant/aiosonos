@@ -21,13 +21,13 @@ from aiosonos.api.models import ContainerType, MetadataStatus, MusicService, Pla
 from aiosonos.api.models import GroupVolume as GroupVolumeData
 from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
 from aiosonos.api.models import PlayModes as PlayModesData
-from aiosonos.const import EventType, GroupEvent
+from aiosonos.const import EventType, GroupEvent, PlaybackErrorEvent
 from aiosonos.exceptions import FailedCommand
 
 from .api.models import PlaybackActions as PlaybackActionsData
 
 if TYPE_CHECKING:
-    from aiosonos.api.models import Container, SessionStatus, Track
+    from aiosonos.api.models import Container, PlaybackError, SessionStatus, Track
 
     from .api.models import Group as GroupData
     from .client import SonosLocalApiClient
@@ -95,6 +95,7 @@ class SonosGroup:
                 await self.client.api.playback.subscribe(
                     self.id,
                     self._handle_playback_status_update,
+                    self._handle_playback_error,
                 ),
                 await self.client.api.group_volume.subscribe(
                     self.id,
@@ -426,6 +427,16 @@ class SonosGroup:
                 EventType.GROUP_UPDATED,
                 self.id,
                 self,
+            ),
+        )
+
+    def _handle_playback_error(self, data: PlaybackError) -> None:
+        """Handle playbackError event."""
+        self.client.signal_event(
+            PlaybackErrorEvent(
+                EventType.PLAYBACK_ERROR,
+                self.id,
+                data,
             ),
         )
 

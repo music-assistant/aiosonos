@@ -307,6 +307,19 @@ class PlaybackStatus(TypedDict):
     previousPositionMillis: int
 
 
+class PlaybackError(TypedDict):
+    """Representation of a playbackError event, sent when a group fails to play an item."""
+
+    _objectType: str  # = playbackError
+    errorCode: str  # e.g. 'ERROR_PLAYBACK_FAILED'
+    reason: NotRequired[str]  # e.g. 'ERROR_NO_RESOURCE'
+    itemId: NotRequired[str]  # the (cloud) queue item that failed
+    httpStatus: NotRequired[int]
+    queueVersion: NotRequired[str]
+    serviceName: NotRequired[str]
+    trackName: NotRequired[str]
+
+
 class MusicService(StrEnum):
     """Enum with (known) possible container service Id's."""
 
