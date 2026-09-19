@@ -121,14 +121,6 @@ class SonosGroup:
                 self._playback_metadata_data = {}
                 return
             raise
-        else:
-            self.client.signal_event(
-                GroupEvent(
-                    EventType.GROUP_ADDED,
-                    self.id,
-                    self,
-                ),
-            )
 
     @property
     def name(self) -> str:
