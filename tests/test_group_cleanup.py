@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType
@@ -40,3 +40,23 @@ def test_removed_group_is_cleaned_up() -> None:
     event = client.signal_event.call_args.args[0]
     assert event.event_type == EventType.GROUP_REMOVED
     assert event.object_id == "group1"
+
+
+async def test_group_removed_during_setup_is_cleaned_up() -> None:
+    """A group removed while async_init is in flight is cleaned up, not left with live listeners."""
+    client = SonosLocalApiClient("1.2.3.4", MagicMock())
+    client.signal_event = MagicMock()
+    group = MagicMock()
+    group.id = "group1"
+
+    def _remove_group() -> None:
+        # simulate a removal event arriving while async_init is still running
+        client._groups.pop("group1")
+
+    group.async_init = AsyncMock(side_effect=_remove_group)
+    client._groups = {"group1": group}
+
+    await client._setup_group({"id": "group1"})
+
+    group.cleanup.assert_called_once()
+    client.signal_event.assert_not_called()

@@ -232,6 +232,12 @@ class SonosLocalApiClient:
             group = SonosGroup(self, group_data)
             self._groups[group.id] = group
         await group.async_init()
+        if self._groups.get(group.id) is not group:
+            # the group was removed (or replaced) while async_init was in
+            # flight; tear down the subscriptions it just created so they
+            # don't keep signalling for a group that is no longer tracked.
+            group.cleanup()
+            return
         # always let the player check if the group changed,
         # as this might have been the active group
         if self._player:
