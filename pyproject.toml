@@ -143,6 +143,10 @@ ignore = [
 
 select = ["ALL"]
 
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into private members to exercise internal behaviour.
+"tests/**/*.py" = ["SLF001"]
+
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false
 mark-parentheses = false

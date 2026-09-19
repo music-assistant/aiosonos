@@ -205,6 +205,9 @@ class SonosLocalApiClient:
         removed_groups = set(self._groups.keys()) - {g["id"] for g in groups_data["groups"]}
         for group_id in removed_groups:
             group = self._groups.pop(group_id)
+            # unsubscribe the group's namespace listeners, otherwise they keep
+            # signalling events (e.g. playback errors) for a group that is gone.
+            group.cleanup()
             self.signal_event(
                 GroupEvent(
                     EventType.GROUP_REMOVED,
