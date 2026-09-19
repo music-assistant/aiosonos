@@ -6,6 +6,8 @@ classifiers = [
   "Environment :: Console",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
 dependencies = ["aiohttp>=3.8.4", "orjson>=3.8.9"]
 description = "Async python library to communicate with Sonos devices."
