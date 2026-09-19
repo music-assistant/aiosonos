@@ -22,7 +22,7 @@ from aiosonos.api.models import GroupVolume as GroupVolumeData
 from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
 from aiosonos.api.models import PlayModes as PlayModesData
 from aiosonos.const import EventType, GroupEvent, PlaybackErrorEvent
-from aiosonos.exceptions import FailedCommand
+from aiosonos.exceptions import FailedCommand, InvalidState
 
 from .api.models import PlaybackActions as PlaybackActionsData
 
@@ -72,7 +72,11 @@ class SonosGroup:
     def cleanup(self) -> None:
         """Handle cleanup on deletion."""
         for unsubscribe_callback in self._unsubscribe_callbacks:
-            unsubscribe_callback()
+            # On a closed connection the unsubscribe wire-command raises
+            # InvalidState, but the namespace listener is already removed by
+            # then, so swallow it and keep tearing down the remaining listeners.
+            with suppress(InvalidState):
+                unsubscribe_callback()
         self._unsubscribe_callbacks = []
 
     async def async_init(self) -> None:
