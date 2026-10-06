@@ -13,6 +13,7 @@ Reference: https://docs.sonos.com/docs/control
 
 from __future__ import annotations
 
+import logging
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
 
     from .api.models import Group as GroupData
     from .client import SonosLocalApiClient
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class SonosGroup:
@@ -79,8 +82,34 @@ class SonosGroup:
                 unsubscribe_callback()
         self._unsubscribe_callbacks = []
 
+    @property
+    def is_subscribed(self) -> bool:
+        """Return whether this group's event subscriptions are in place.
+
+        Without them the playback, volume and metadata status never update.
+        """
+        return bool(self._unsubscribe_callbacks)
+
+    @property
+    def coordinated_by_client(self) -> bool:
+        """Return whether the connected player is this group's coordinator.
+
+        A player's local websocket only serves the group that player
+        coordinates; any other group is remote and cannot be subscribed to.
+        """
+        return self.coordinator_id == self.client.player_id
+
     async def async_init(self) -> None:
-        """Handle Async initialization."""
+        """Handle Async initialization.
+
+        Reads the group's status and subscribes to its updates. A remote group
+        (one the connected player does not coordinate) is refused by the player
+        with ``groupCoordinatorChanged`` and left without subscriptions, as its
+        coordinator's connection is the one that tracks it. The same refusal for
+        a group this player coordinates is transient (the player is still
+        settling into the role), so it is raised like any other failure for the
+        caller to retry; whatever was subscribed before the failure is undone.
+        """
         # grab playback data and setup subscription
         try:
             self._volume_data = await self.client.api.group_volume.get_volume(self.id)
@@ -95,31 +124,42 @@ class SonosGroup:
                     self.id,
                 )
             )
-            self._unsubscribe_callbacks = [
+            # one at a time, so a failure part-way can undo what succeeded
+            self._unsubscribe_callbacks.append(
                 await self.client.api.playback.subscribe(
                     self.id,
                     self._handle_playback_status_update,
                     self._handle_playback_error,
                 ),
+            )
+            self._unsubscribe_callbacks.append(
                 await self.client.api.group_volume.subscribe(
                     self.id,
                     self._handle_volume_update,
                 ),
+            )
+            self._unsubscribe_callbacks.append(
                 await self.client.api.playback_metadata.subscribe(
                     self.id,
                     self._handle_metadata_status_update,
                 ),
-            ]
+            )
         except FailedCommand as err:
-            if err.error_code == "groupCoordinatorChanged":
+            self.cleanup()
+            self._volume_data = {}
+            self._playback_status_data = {}
+            self._playback_actions = PlaybackActions({})
+            self._play_modes = PlayModes({})
+            self._playback_metadata_data = {}
+            if err.error_code == "groupCoordinatorChanged" and not self.coordinated_by_client:
                 # retrieving group details is not possible for remote groups when
                 # connected to a player's local websocket.
-                self._volume_data = {}
-                self._playback_status_data = {}
-                self._playback_actions = PlaybackActions({})
-                self._play_modes = PlayModes({})
-                self._playback_metadata_data = {}
                 return
+            _LOGGER.debug("Setup of group %s failed: %s", self.id, err)
+            raise
+        except Exception:
+            # a dropped connection, a timeout: undo any subscription made so far
+            self.cleanup()
             raise
 
     @property
