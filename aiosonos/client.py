@@ -42,6 +42,10 @@ EventSubscriptionType = tuple[
 # could not be set up: the player may still be settling into the coordinator
 # role after a regroup, or the connection may have hiccupped.
 SETUP_RETRY_DELAYS: tuple[float, ...] = (1, 2, 5, 10, 30)
+# Retries with a shorter wait than this are logged at debug level: a player
+# usually settles into the coordinator role within a few seconds, and only a
+# setup that keeps failing is worth a warning.
+SETUP_RETRY_WARN_DELAY: float = 10
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -204,10 +208,18 @@ class SonosLocalApiClient:
                 # existing group object
                 group = self._groups[group_data["id"]]
                 group.update_data(group_data)
-                # A group this player coordinates but is not subscribed to
-                # (a coordinator change onto this player under the same group
-                # id, or an earlier setup that failed) is set up (again).
-                if group.coordinated_by_client and not group.is_subscribed:
+                if not group.coordinated_by_client:
+                    # The group moved to another coordinator: its subscriptions
+                    # (and any setup still trying to create them) belong to the
+                    # player that coordinates it now. Dropping them here also
+                    # lets a later move back onto this player be set up afresh.
+                    if (task := self._group_setups.pop(group.id, None)) is not None:
+                        task.cancel()
+                    group.cleanup()
+                elif not group.is_subscribed:
+                    # A group this player coordinates but is not subscribed to
+                    # (a coordinator change onto this player under the same group
+                    # id, or an earlier setup that failed) is set up (again).
                     self._schedule_group_setup(group_data)
                 continue
             # A new group was added. Register it in self._groups synchronously
@@ -312,7 +324,8 @@ class SonosLocalApiClient:
     async def _group_setup_retries(self, group: SonosGroup, error: Exception) -> None:
         """Retry a group's setup after each delay in SETUP_RETRY_DELAYS."""
         for attempt, delay in enumerate(SETUP_RETRY_DELAYS, start=1):
-            _LOGGER.warning(
+            _LOGGER.log(
+                logging.WARNING if delay >= SETUP_RETRY_WARN_DELAY else logging.DEBUG,
                 "Setup of group %s failed (%s); retry %d of %d in %ss",
                 group.id,
                 error,

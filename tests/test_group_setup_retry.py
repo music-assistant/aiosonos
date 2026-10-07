@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -150,6 +151,78 @@ async def test_groups_event_sets_up_an_unsubscribed_own_group_once() -> None:
 
     group.async_init.assert_awaited_once()
     assert group.coordinated_by_client
+
+
+async def test_group_moving_to_a_remote_coordinator_drops_its_subscriptions() -> None:
+    """A group that moves away from this player loses its subscriptions and pending setup."""
+    client = _client()
+    group = _group(client, PLAYER)
+    unsubscribe = Mock()
+    group._unsubscribe_callbacks = [unsubscribe]
+    client._groups = {"group1": group}
+    pending = client._loop.create_task(asyncio.sleep(60))
+    client._group_setups["group1"] = pending
+
+    client._handle_groups_event(
+        {
+            "groups": [{"id": "group1", "coordinatorId": OTHER, "playerIds": [PLAYER, OTHER]}],
+            "players": [],
+        },
+    )
+    await asyncio.sleep(0)
+
+    unsubscribe.assert_called_once()
+    assert not group.is_subscribed
+    assert pending.cancelled()
+    assert "group1" not in client._group_setups
+    assert client._groups["group1"] is group
+
+
+async def test_group_moving_away_and_back_is_set_up_again() -> None:
+    """Local -> remote -> local: the second arrival sets the group up afresh."""
+    client = _client()
+    group = _group(client, PLAYER)
+    group._unsubscribe_callbacks = [Mock()]
+    client._groups = {"group1": group}
+    group.async_init = AsyncMock()
+    away = {"id": "group1", "coordinatorId": OTHER, "playerIds": [PLAYER, OTHER]}
+    back = {"id": "group1", "coordinatorId": PLAYER, "playerIds": [PLAYER, OTHER]}
+
+    client._handle_groups_event({"groups": [away], "players": []})
+    assert "group1" not in client._group_setups
+    client._handle_groups_event({"groups": [back], "players": []})
+    await client._group_setups["group1"]
+
+    group.async_init.assert_awaited_once()
+
+
+async def test_early_retries_log_at_debug_and_later_ones_warn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Only a retry that waits SETUP_RETRY_WARN_DELAY or longer is a warning."""
+    monkeypatch.setattr(client_module, "SETUP_RETRY_DELAYS", (0, 0))
+    monkeypatch.setattr(client_module, "SETUP_RETRY_WARN_DELAY", 0)
+    client = _client()
+    group = _group(client, PLAYER)
+    client._groups = {"group1": group}
+    group.async_init = AsyncMock(side_effect=FailedCommand("groupCoordinatorChanged"))
+
+    with caplog.at_level(logging.DEBUG, logger="aiosonos.client"):
+        await client._setup_group({"id": "group1"})
+        await client._group_setups["group1"]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2
+
+    caplog.clear()
+    monkeypatch.setattr(client_module, "SETUP_RETRY_WARN_DELAY", 10)
+    group.async_init = AsyncMock(side_effect=FailedCommand("groupCoordinatorChanged"))
+    with caplog.at_level(logging.DEBUG, logger="aiosonos.client"):
+        await client._setup_group({"id": "group1"})
+        await client._group_setups["group1"]
+    retries = [r for r in caplog.records if "retry" in r.getMessage()]
+    assert len(retries) == 2
+    assert all(r.levelno == logging.DEBUG for r in retries)
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
 
 
 async def test_groups_event_leaves_a_subscribed_group_alone() -> None:
