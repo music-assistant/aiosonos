@@ -9,6 +9,7 @@ namespaces so this client could be extended to support the cloud API as well.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Self
 
@@ -37,6 +38,17 @@ EventSubscriptionType = tuple[
     tuple[str, ...] | None,
 ]
 
+# Seconds to wait before each retry when a group this player coordinates
+# could not be set up: the player may still be settling into the coordinator
+# role after a regroup, or the connection may have hiccupped.
+SETUP_RETRY_DELAYS: tuple[float, ...] = (1, 2, 5, 10, 30)
+# Retries with a shorter wait than this are logged at debug level: a player
+# usually settles into the coordinator role within a few seconds, and only a
+# setup that keeps failing is worth a warning.
+SETUP_RETRY_WARN_DELAY: float = 10
+
+_LOGGER = logging.getLogger(__name__)
+
 
 class SonosLocalApiClient:
     """Sonos API Client to manage a single Sonos speaker, using the local websockets api."""
@@ -53,6 +65,8 @@ class SonosLocalApiClient:
         self._aiohttp_session = aiohttp_session
         self._groups: dict[str, SonosGroup] = {}
         self._subscribers: list[EventSubscriptionType] = []
+        # one in-flight setup (or pending retry) per group id
+        self._group_setups: dict[str, asyncio.Task[None]] = {}
 
     @property
     def player_id(self) -> str:
@@ -131,6 +145,9 @@ class SonosLocalApiClient:
 
     async def disconnect(self) -> None:
         """Disconnect the client and cleanup."""
+        for task in self._group_setups.values():
+            task.cancel()
+        self._group_setups.clear()
         await self.api.disconnect()
 
     async def start_listening(self, init_ready: asyncio.Event | None = None) -> None:
@@ -189,7 +206,21 @@ class SonosLocalApiClient:
         for group_data in groups_data["groups"]:
             if group_data["id"] in self._groups:
                 # existing group object
-                self._groups[group_data["id"]].update_data(group_data)
+                group = self._groups[group_data["id"]]
+                group.update_data(group_data)
+                if not group.coordinated_by_client:
+                    # The group moved to another coordinator: its subscriptions
+                    # (and any setup still trying to create them) belong to the
+                    # player that coordinates it now. Dropping them here also
+                    # lets a later move back onto this player be set up afresh.
+                    if (task := self._group_setups.pop(group.id, None)) is not None:
+                        task.cancel()
+                    group.cleanup()
+                elif not group.is_subscribed:
+                    # A group this player coordinates but is not subscribed to
+                    # (a coordinator change onto this player under the same group
+                    # id, or an earlier setup that failed) is set up (again).
+                    self._schedule_group_setup(group_data)
                 continue
             # A new group was added. Register it in self._groups synchronously
             # *now*, before scheduling _setup_group: if another event for the
@@ -200,11 +231,13 @@ class SonosLocalApiClient:
             # second one would overwrite the first listener, leaving the group
             # with no working callbacks.
             self._groups[group_data["id"]] = SonosGroup(self, group_data)
-            self._loop.create_task(self._setup_group(group_data))
+            self._schedule_group_setup(group_data)
         # check if any groups are removed
         removed_groups = set(self._groups.keys()) - {g["id"] for g in groups_data["groups"]}
         for group_id in removed_groups:
             group = self._groups.pop(group_id)
+            if (task := self._group_setups.pop(group_id, None)) is not None:
+                task.cancel()
             # unsubscribe the group's namespace listeners, otherwise they keep
             # signalling events (e.g. playback errors) for a group that is gone.
             group.cleanup()
@@ -221,8 +254,30 @@ class SonosLocalApiClient:
                 continue
             self._player.update_data(player_data)
 
+    def _schedule_group_setup(self, group_data: GroupData) -> None:
+        """Set up a group in the background, unless a setup for it is under way."""
+        group_id = group_data["id"]
+        if (task := self._group_setups.get(group_id)) is not None and not task.done():
+            return
+        self._track_group_setup(group_id, self._loop.create_task(self._setup_group(group_data)))
+
+    def _track_group_setup(self, group_id: str, task: asyncio.Task[None]) -> None:
+        """Remember a group's setup task until it is done."""
+        self._group_setups[group_id] = task
+
+        def _forget(done: asyncio.Task[None]) -> None:
+            if self._group_setups.get(group_id) is done:
+                del self._group_setups[group_id]
+
+        task.add_done_callback(_forget)
+
     async def _setup_group(self, group_data: GroupData) -> None:
-        """Register/setup a (new) group."""
+        """Register/setup a (new) group.
+
+        A failed setup of a group this player coordinates is retried in the
+        background (see SETUP_RETRY_DELAYS); a remote group simply has nothing
+        to set up and returns at once.
+        """
         # When called from _handle_groups_event the SonosGroup has already been
         # registered in self._groups (see comment there). The fallback path
         # below covers the start_listening() bootstrap, which calls us directly
@@ -231,7 +286,15 @@ class SonosLocalApiClient:
         if group is None:
             group = SonosGroup(self, group_data)
             self._groups[group.id] = group
-        await group.async_init()
+        try:
+            await group.async_init()
+        except Exception as err:  # noqa: BLE001
+            self._retry_group_setup(group, err)
+            return
+        self._finish_group_setup(group)
+
+    def _finish_group_setup(self, group: SonosGroup) -> None:
+        """Announce a group whose setup succeeded."""
         if self._groups.get(group.id) is not group:
             # the group was removed (or replaced) while async_init was in
             # flight; tear down the subscriptions it just created so they
@@ -248,6 +311,43 @@ class SonosLocalApiClient:
                 group.id,
                 group,
             ),
+        )
+
+    def _retry_group_setup(self, group: SonosGroup, error: Exception) -> None:
+        """Keep trying to set up a group, with growing waits, while it still exists."""
+        if self._groups.get(group.id) is not group:
+            return  # gone in the meantime
+        self._track_group_setup(
+            group.id, self._loop.create_task(self._group_setup_retries(group, error))
+        )
+
+    async def _group_setup_retries(self, group: SonosGroup, error: Exception) -> None:
+        """Retry a group's setup after each delay in SETUP_RETRY_DELAYS."""
+        for attempt, delay in enumerate(SETUP_RETRY_DELAYS, start=1):
+            _LOGGER.log(
+                logging.WARNING if delay >= SETUP_RETRY_WARN_DELAY else logging.DEBUG,
+                "Setup of group %s failed (%s); retry %d of %d in %ss",
+                group.id,
+                error,
+                attempt,
+                len(SETUP_RETRY_DELAYS),
+                delay,
+            )
+            await asyncio.sleep(delay)
+            if self._groups.get(group.id) is not group:
+                return  # gone in the meantime
+            try:
+                await group.async_init()
+            except Exception as err:  # noqa: BLE001
+                error = err
+                continue
+            self._finish_group_setup(group)
+            return
+        _LOGGER.error(
+            "Giving up on group %s after %d attempts: %s",
+            group.id,
+            len(SETUP_RETRY_DELAYS) + 1,
+            error,
         )
 
     async def __aenter__(self) -> Self:
