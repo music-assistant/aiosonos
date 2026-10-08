@@ -42,20 +42,24 @@ class AudioClipNameSpace(SonosNameSpace):
         Reference:
         https://docs.sonos.com/reference/audioclip-loadaudioclip-playerid
         """
+        options = {
+            "name": name,
+            "appId": app_id,
+            "priority": priority,
+            "clipType": clip_type,
+            "clipLEDBehavior": clip_led_behavior,
+        }
+        if stream_url is not None:
+            options["streamUrl"] = stream_url
+        if http_authorization is not None:
+            options["httpAuthorization"] = http_authorization
+        if volume is not None:
+            options["volume"] = volume
         return await self.api.send_command(
             namespace=self.namespace,
             command="loadAudioClip",
             playerId=player_id,
-            options={
-                "name": name,
-                "appId": app_id,
-                "priority": priority,
-                "clipType": clip_type,
-                "streamUrl": stream_url,
-                "httpAuthorization": http_authorization,
-                "volume": volume,
-                "clipLEDBehavior": clip_led_behavior,
-            },
+            options=options,
         )
 
     async def subscribe(
