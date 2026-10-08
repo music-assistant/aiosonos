@@ -48,17 +48,18 @@ class SonosGroup:
         # we set some default values for the status dicts here
         self._play_modes = PlayModes({})
         self._volume_data = GroupVolumeData(
-            objectType="groupVolume", fixed=False, volume=0, mute=False
+            objectType="groupVolume", fixed=False, volume=0, muted=False
         )
-        self._playback_actions = playback_actions = PlaybackActionsData(
+        playback_actions = PlaybackActionsData(
             canCrossfade=False,
             canPause=False,
             canPlay=False,
             canSeek=False,
-            canSkipBackward=False,
-            canSkipForward=False,
+            canSkip=False,
+            canSkipToPrevious=False,
             canStop=False,
         )
+        self._playback_actions = PlaybackActions(playback_actions)
         self._playback_status_data: PlaybackStatusData = PlaybackStatusData(
             objectType="playbackStatus",
             availablePlaybackActions=playback_actions,
@@ -426,10 +427,11 @@ class SonosGroup:
 
     def _handle_playback_status_update(self, data: PlaybackStatusData) -> None:
         """Handle playbackStatus update."""
+        # the position is extrapolated from this moment on, also when nothing else changed
+        self._playback_status_last_updated = time.time()
         if data == self._playback_status_data:
             return
         self._playback_status_data = data
-        self._playback_status_last_updated = time.time()
         self._playback_actions.raw_data.update(data["availablePlaybackActions"])
         self._play_modes.raw_data.update(data["playModes"])
         self.client.signal_event(
@@ -485,14 +487,25 @@ class PlaybackActions:
         self.raw_data = raw_data
 
     @property
+    def can_skip(self) -> bool:
+        """Return if the group can skip to the next item."""
+        return self.raw_data.get("canSkip", False)
+
+    @property
+    def can_skip_to_previous(self) -> bool:
+        """Return if the group can skip to the previous item."""
+        # canSkipBack is the pre-1.36.0 name of canSkipToPrevious
+        return self.raw_data.get("canSkipToPrevious", self.raw_data.get("canSkipBack", False))
+
+    @property
     def can_skip_forward(self) -> bool:
-        """Return if the group can skip forward."""
-        return self.raw_data.get("canSkipForward", False)
+        """Return if the group can skip forward (alias of can_skip)."""
+        return self.can_skip
 
     @property
     def can_skip_backward(self) -> bool:
-        """Return if the group can skip backward."""
-        return self.raw_data.get("canSkipBackward", False)
+        """Return if the group can skip backward (alias of can_skip_to_previous)."""
+        return self.can_skip_to_previous
 
     @property
     def can_play(self) -> bool:
