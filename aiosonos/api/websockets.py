@@ -205,7 +205,8 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
                 if msg["success"]:
                     future.set_result(msg_data)
                 else:
-                    future.set_exception(FailedCommand(msg_data["_objectType"]))
+                    # e.g. a groupCoordinatorChanged body, which carries no errorCode
+                    future.set_exception(FailedCommand(msg_data.get("_objectType", "unknown")))
             return
 
         # handle EventMessage
@@ -253,7 +254,7 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
             msg = orjson.loads(ws_msg.data)
         except TypeError as err:
             err_msg = f"Received unsupported JSON: {err}"
-            raise InvalidMessage(msg) from err_msg
+            raise InvalidMessage(err_msg) from err
         except ValueError as err:
             raise InvalidMessage("Received invalid JSON.") from err
 
