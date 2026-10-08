@@ -170,7 +170,10 @@ class SonosPlayer:
             if group.coordinator_id == self.id or self.id in group.player_ids:
                 self._active_group = group
                 break
-        if prev_group_id == self.group.id:
+        else:
+            # no known group lists this player: a stale group object must not linger
+            self._active_group = None
+        if prev_group_id == (self._active_group.id if self._active_group else None):
             return
         self.client.signal_event(
             PlayerEvent(
