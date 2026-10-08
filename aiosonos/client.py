@@ -233,7 +233,13 @@ class SonosLocalApiClient:
             self._groups[group_data["id"]] = SonosGroup(self, group_data)
             self._schedule_group_setup(group_data)
         # check if any groups are removed
-        removed_groups = set(self._groups.keys()) - {g["id"] for g in groups_data["groups"]}
+        if groups_data.get("partial"):
+            # the player's view of the household is incomplete (a player is still being
+            # discovered): a group missing from this event has not necessarily gone
+            _LOGGER.debug("Partial groups event, not removing any group")
+            removed_groups: set[str] = set()
+        else:
+            removed_groups = set(self._groups.keys()) - {g["id"] for g in groups_data["groups"]}
         for group_id in removed_groups:
             group = self._groups.pop(group_id)
             if (task := self._group_setups.pop(group_id, None)) is not None:
