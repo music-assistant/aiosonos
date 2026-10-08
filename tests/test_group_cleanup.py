@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+from aiosonos.api.namespaces.audio_clip import AudioClipNameSpace
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType
 from aiosonos.exceptions import InvalidState
@@ -83,3 +85,60 @@ async def test_group_removed_during_setup_is_cleaned_up() -> None:
 
     group.cleanup.assert_called_once()
     client.signal_event.assert_not_called()
+
+
+async def test_create_group_returns_the_group_info() -> None:
+    """The created (or reused) group comes back to the caller."""
+    client = SonosLocalApiClient("1.2.3.4", MagicMock())
+    client._household_id = "Sonos_1"
+    client.api = MagicMock()
+    info = {"group": {"id": "group1", "playerIds": ["RINCON_A", "RINCON_B"]}}
+    client.api.groups.create_group = AsyncMock(return_value=info)
+
+    assert await client.create_group(["RINCON_A", "RINCON_B"]) == info
+    client.api.groups.create_group.assert_awaited_once_with(
+        "Sonos_1", ["RINCON_A", "RINCON_B"], None
+    )
+
+
+async def test_load_audio_clip_sends_only_given_options() -> None:
+    """Optional clip parameters that were not given are left out, not sent as null."""
+    api = MagicMock()
+    api.send_command = AsyncMock(return_value={})
+    namespace = AudioClipNameSpace(api)
+
+    await namespace.load_audio_clip("RINCON_A", name="Hello", app_id="com.example")
+
+    options = api.send_command.await_args.kwargs["options"]
+    assert "streamUrl" not in options
+    assert "httpAuthorization" not in options
+    assert "volume" not in options
+    assert options["name"] == "Hello"
+
+    await namespace.load_audio_clip(
+        "RINCON_A", name="Hello", app_id="com.example", stream_url="http://x/y.mp3", volume=0
+    )
+    options = api.send_command.await_args.kwargs["options"]
+    assert options["streamUrl"] == "http://x/y.mp3"
+    assert options["volume"] == 0
+
+
+async def test_start_listening_without_ready_event() -> None:
+    """The ready event is optional, as its signature says."""
+    client = SonosLocalApiClient("1.2.3.4", MagicMock())
+    client._player_id = "RINCON_ME"
+    client._household_id = "Sonos_1"
+    client._loop = asyncio.get_running_loop()
+    api = MagicMock()
+    api.start_listening = AsyncMock()
+    api.groups.get_groups = AsyncMock(
+        return_value={"groups": [], "players": [{"id": "RINCON_ME", "name": "Me"}]}
+    )
+    api.groups.subscribe = AsyncMock()
+    api.player_volume.get_volume = AsyncMock(return_value={})
+    api.player_volume.subscribe = AsyncMock()
+    client.api = api
+
+    await client.start_listening()
+
+    assert client.player.id == "RINCON_ME"

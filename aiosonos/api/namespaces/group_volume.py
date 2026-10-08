@@ -79,7 +79,7 @@ class GroupVolumeNameSpace(SonosNameSpace):
     async def set_relative_volume(
         self,
         group_id: str,
-        volume_delta: int | None = None,
+        volume_delta: int,
     ) -> None:
         """
         Send setRelativeVolume command to relatively change the group volume.
