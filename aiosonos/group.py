@@ -55,8 +55,8 @@ class SonosGroup:
             canPause=False,
             canPlay=False,
             canSeek=False,
-            canSkipBackward=False,
-            canSkipForward=False,
+            canSkip=False,
+            canSkipBack=False,
             canStop=False,
         )
         self._playback_status_data: PlaybackStatusData = PlaybackStatusData(
@@ -487,12 +487,12 @@ class PlaybackActions:
     @property
     def can_skip_forward(self) -> bool:
         """Return if the group can skip forward."""
-        return self.raw_data.get("canSkipForward", False)
+        return self.raw_data.get("canSkip", False)
 
     @property
     def can_skip_backward(self) -> bool:
         """Return if the group can skip backward."""
-        return self.raw_data.get("canSkipBackward", False)
+        return self.raw_data.get("canSkipBack", False)
 
     @property
     def can_play(self) -> bool:
