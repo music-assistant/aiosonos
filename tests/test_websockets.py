@@ -69,9 +69,8 @@ async def test_unknown_error_event_only_logged(caplog: pytest.LogCaptureFixture)
     api = _api()
     error_callback = Mock()
     await _subscribe_playback(api, error_callback=error_callback)
-    api.logger.setLevel(logging.DEBUG)
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger=api.logger.name):
         api._handle_incoming_message(
             ({"type": "groupVolumeError", "groupId": GROUP}, {"errorCode": "ERROR"}),
         )
