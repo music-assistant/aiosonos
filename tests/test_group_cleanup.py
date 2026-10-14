@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 from aiosonos.client import SonosLocalApiClient
@@ -157,3 +158,56 @@ def test_player_picks_up_group_it_joined() -> None:
 
     assert player.group is mine
     assert player.client.signal_event.call_count == 1
+
+
+async def test_partial_event_moving_the_player_wins_over_its_cached_group() -> None:
+    """A partial event that lists the player in group B moves it there from omitted group A."""
+    client = SonosLocalApiClient("1.2.3.4", MagicMock())
+    client._player_id = "RINCON_ME"
+    client._loop = asyncio.get_running_loop()
+    client.signal_event = MagicMock()
+    client.api = MagicMock()
+    client.api.groups.modify_group_members = AsyncMock()
+    group_a = SonosGroup(
+        client, {"id": "A", "coordinatorId": "RINCON_ME", "playerIds": ["RINCON_ME"]}
+    )
+    group_b = SonosGroup(
+        client, {"id": "B", "coordinatorId": "RINCON_OTHER", "playerIds": ["RINCON_OTHER"]}
+    )
+    client._groups = {"A": group_a, "B": group_b}
+    client._player = SonosPlayer(client, {"id": "RINCON_ME", "name": "Me"})
+    assert client.player.group is group_a
+
+    client._handle_groups_event(
+        {
+            "groups": [
+                {
+                    "id": "B",
+                    "coordinatorId": "RINCON_OTHER",
+                    "playerIds": ["RINCON_OTHER", "RINCON_ME"],
+                }
+            ],
+            "players": [{"id": "RINCON_ME", "name": "Me"}],
+            "partial": True,
+        }
+    )
+    await client.player.leave_group()
+
+    assert client._groups == {"A": group_a, "B": group_b}
+    assert group_a.player_ids == []
+    assert client.player.group is group_b
+    client.api.groups.modify_group_members.assert_awaited_once_with(
+        "B", player_ids_to_add=[], player_ids_to_remove=["RINCON_ME"]
+    )
+
+
+def test_a_group_listing_the_player_wins_over_one_it_only_coordinated() -> None:
+    """A cached group that still names the player as coordinator does not hide its real group."""
+    stale = _member_group("A", ["RINCON_ME"])
+    stale.player_ids = ["RINCON_OTHER"]
+    real = _member_group("B", ["RINCON_OTHER", "RINCON_ME"])
+    player = _player_with_groups([stale, real])
+
+    player.check_active_group()
+
+    assert player.group is real
