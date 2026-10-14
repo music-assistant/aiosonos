@@ -10,6 +10,7 @@ import pytest
 from aiosonos.api import websockets
 from aiosonos.api.websockets import SonosLocalWebSocketsApi
 from aiosonos.exceptions import CommandTimeout, FailedCommand
+from aiosonos.group import SonosGroup
 
 
 def _api() -> SonosLocalWebSocketsApi:
@@ -51,3 +52,22 @@ async def test_reply_in_time_resolves() -> None:
 
     assert result == {"playbackState": "x"}
     assert api._result_futures == {}
+
+
+async def test_stop_timeout_does_not_clear_queue() -> None:
+    """An unanswered suspend is raised; the queue-clearing fallback is not sent."""
+    client = MagicMock()
+    client.api.playback_session.suspend = AsyncMock(
+        side_effect=CommandTimeout("playbackSession:suspend", 10),
+    )
+    client.api.playback_session.create_session = AsyncMock()
+    client.api.playback_session.load_stream_url = AsyncMock()
+    group = SonosGroup(client, {"id": "group1"})
+    group.active_session_id = "session1"
+
+    with pytest.raises(CommandTimeout):
+        await group.stop()
+
+    client.api.playback_session.create_session.assert_not_called()
+    client.api.playback_session.load_stream_url.assert_not_called()
+    assert group.active_session_id is None
