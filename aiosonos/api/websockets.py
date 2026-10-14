@@ -198,7 +198,7 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         # handle error message
         if "errorCode" in msg_data:
             if "cmdId" in msg:
-                if future := self._result_futures.get(msg["cmdId"]):
+                if (future := self._pending_future(msg["cmdId"])) is not None:
                     future.set_exception(
                         FailedCommand(msg_data["errorCode"], msg_data.get("reason")),
                     )
@@ -211,7 +211,7 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
 
         # handle command result message
         if "success" in msg:
-            if future := self._result_futures.get(msg["cmdId"]):
+            if (future := self._pending_future(msg["cmdId"])) is not None:
                 if msg["success"]:
                     future.set_result(msg_data)
                 else:
@@ -243,6 +243,15 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
 
         # Log anything we can't handle here
         self.logger.debug("Received unhandled message: %s", msg)
+
+    def _pending_future(self, cmd_id: str) -> asyncio.Future[Any] | None:
+        """Return the future still waiting for the reply to a command (if any)."""
+        future = self._result_futures.get(cmd_id)
+        if future is None or future.done():
+            # a command that timed out is cancelled before its slot is released,
+            # so a reply arriving in between finds a future that is already done
+            return None
+        return future
 
     async def receive_message_or_raise(self) -> tuple[ResultMessage, dict[str, Any]]:
         """Receive (raw) message or raise."""

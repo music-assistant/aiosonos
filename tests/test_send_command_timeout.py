@@ -71,3 +71,24 @@ async def test_stop_timeout_does_not_clear_queue() -> None:
     client.api.playback_session.create_session.assert_not_called()
     client.api.playback_session.load_stream_url.assert_not_called()
     assert group.active_session_id is None
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"success": True, "type": "playbackStatus"},
+        {"success": False, "type": "none"},
+    ],
+    ids=["success", "failure"],
+)
+async def test_reply_after_timeout_cancel_is_dropped(reply: dict[str, object]) -> None:
+    """A reply for a command whose timeout already cancelled its future does not raise."""
+    api = _api()
+    future = api._loop.create_future()
+    future.cancel()
+    api._result_futures["cmd1"] = future
+
+    api._handle_incoming_message(({"cmdId": "cmd1", **reply}, {"_objectType": "x"}))
+    api._handle_incoming_message(({"cmdId": "cmd1"}, {"errorCode": "ERROR", "reason": "late"}))
+
+    assert future.cancelled()
