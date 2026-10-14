@@ -17,7 +17,7 @@ class AudioClipNameSpace(SonosNameSpace):
     """AudioClip Namespace handlers."""
 
     namespace = "audioClip"
-    event_type = "audioClip"
+    event_type = "audioClipStatus"
     _event_model = AudioClipStatusEvent
     _event_key = "playerId"
 

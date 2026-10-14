@@ -13,7 +13,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Self, cast
 
-from aiosonos.const import EventType, GroupEvent, SonosEvent
+from aiosonos.const import EventType, GroupCoordinatorChangedEvent, GroupEvent, SonosEvent
 from aiosonos.utils import get_discovery_info
 
 from .api.websockets import SonosLocalWebSocketsApi
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
     from aiohttp import ClientSession
 
-    from aiosonos.api.models import GroupInfo
+    from aiosonos.api.models import GroupCoordinatorChanged, GroupInfo
 
     from .api.models import Group as GroupData
     from .api.models import Groups as GroupsData
@@ -140,6 +140,7 @@ class SonosLocalApiClient:
             discovery_info["websocketUrl"],
             self._aiohttp_session,
         )
+        self.api.subscribe_group_coordinator_changed(self._handle_group_coordinator_changed)
         # NOTE: connect will raise when connecting failed
         await self.api.connect()
 
@@ -275,6 +276,23 @@ class SonosLocalApiClient:
                 continue
             remaining = [x for x in group.player_ids if x not in reported_players]
             group.update_data(cast("GroupData", {"id": group.id, "playerIds": remaining}))
+    def _handle_group_coordinator_changed(
+        self,
+        group_id: str,
+        data: GroupCoordinatorChanged,
+    ) -> None:
+        """Forward a groupCoordinatorChanged event to subscribers.
+
+        Signalled whether or not the group is still known here: on a move, the
+        player sends it before the groups event that replaces the old group.
+        """
+        self.signal_event(
+            GroupCoordinatorChangedEvent(
+                EventType.GROUP_COORDINATOR_CHANGED,
+                group_id,
+                data,
+            ),
+        )
 
     def _schedule_group_setup(self, group_data: GroupData) -> None:
         """Set up a group in the background, unless a setup for it is under way."""

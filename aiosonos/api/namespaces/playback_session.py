@@ -2,23 +2,32 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
-from aiosonos.api.models import SessionStatus, Track
+from aiosonos.api.models import SessionError, SessionInfo, SessionStatus, Track
 
 from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackType
 
 if TYPE_CHECKING:
-    from collections.abc import Container
+    from collections.abc import Mapping
+
+    from aiosonos.api.models import Container
+    from aiosonos.api.websockets import SonosLocalWebSocketsApi
 
 
 class PlaybackSessionNameSpace(SonosNameSpace):
     """PlaybackSession Namespace handlers."""
 
     namespace = "playbackSession"
-    event_type = "playbackSession"
-    _event_model = SessionStatus
+    event_type = "sessionInfo"
+    error_event_type = "sessionError"
+    _event_model = SessionInfo
     _event_key = "sessionId"
+
+    def __init__(self, api: SonosLocalWebSocketsApi) -> None:
+        """Handle Initialization."""
+        super().__init__(api)
+        self._error_listeners: dict[str, SubscribeCallbackType[SessionError]] = {}
 
     async def create_session(
         self,
@@ -251,14 +260,39 @@ class PlaybackSessionNameSpace(SonosNameSpace):
     async def subscribe(
         self,
         session_id: str,
-        callback: SubscribeCallbackType,
+        callback: SubscribeCallbackType[SessionInfo],
+        error_callback: SubscribeCallbackType[SessionError] | None = None,
     ) -> UnsubscribeCallbackType:
         """
         Subscribe to events in the playbackSession namespace for a specific sessionId.
 
+        The callback receives sessionInfo events (session suspended or resumed);
+        the optional error_callback receives sessionError events, e.g.
+        ERROR_SESSION_EVICTED when another app or source took over the group.
+
         Returns handle to unsubscribe.
 
         Reference:
-        https://docs.sonos.com/reference/playback-subscribe-groupid
+        https://docs.sonos.com/reference/playbacksession-subscribe-sessionid
         """
-        return await self._handle_subscribe(session_id, callback)
+        unsubscribe = await self._handle_subscribe(session_id, callback)
+        if error_callback is None:
+            self._error_listeners.pop(session_id, None)
+        else:
+            self._error_listeners[session_id] = error_callback
+
+        def _unsubscribe() -> None:
+            self._error_listeners.pop(session_id, None)
+            unsubscribe()
+
+        return _unsubscribe
+
+    async def _handle_error_event(
+        self,
+        event: Mapping[str, Any],
+        event_data: Mapping[str, Any],
+    ) -> None:
+        """Forward a sessionError event to the subscribed error listener."""
+        session_id = event.get(self._event_key)
+        if session_id and (handler := self._error_listeners.get(session_id)):
+            handler(cast("SessionError", event_data))

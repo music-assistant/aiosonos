@@ -60,6 +60,21 @@ async def test_remote_group_is_left_unsubscribed_quietly() -> None:
     assert not group.coordinated_by_client
 
 
+async def test_remote_group_sends_no_command() -> None:
+    """A group this player does not coordinate is not probed: the player would refuse it."""
+    client = _client()
+    client.api = _api()
+    group = _group(client, OTHER)
+
+    await group.async_init()
+
+    client.api.group_volume.get_volume.assert_not_awaited()
+    client.api.playback.get_playback_status.assert_not_awaited()
+    client.api.playback.subscribe.assert_not_awaited()
+    assert not group.is_subscribed
+    assert group.playback_metadata == {}
+
+
 async def test_coordinator_refusal_on_own_group_is_raised() -> None:
     """The same refusal for a group this player coordinates is transient and must be retried."""
     client = _client()

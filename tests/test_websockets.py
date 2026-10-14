@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, call
 
 import pytest
 
@@ -93,3 +93,110 @@ async def test_playback_subscribe_keeps_error_listener_in_sync() -> None:
     unsubscribe = await _subscribe_playback(api, error_callback=error_callback)
     unsubscribe()
     assert GROUP not in api.playback._error_listeners
+
+
+# headers and bodies as an Era 300 (firmware 97.1) sent them
+OFFICE_GROUP = "RINCON_F0F6C1CC8D0401400:140007645"
+COORDINATOR_UPDATED = (
+    {
+        "namespace": "global",
+        "groupId": OFFICE_GROUP,
+        "name": "groupCoordinatorChanged",
+        "type": "groupCoordinatorChanged",
+    },
+    {
+        "_objectType": "groupCoordinatorChanged",
+        "groupStatus": "GROUP_STATUS_UPDATED",
+        "groupName": "Office + 1",
+    },
+)
+COORDINATOR_MOVED = (
+    COORDINATOR_UPDATED[0],
+    {
+        "_objectType": "groupCoordinatorChanged",
+        "groupStatus": "GROUP_STATUS_MOVED",
+        "groupName": "Bathroom + 1",
+        "websocketUrl": "wss://192.168.113.18:1443/websocket/api",
+        "playerId": "RINCON_48A6B86DD3F101400",
+    },
+)
+
+
+async def test_group_coordinator_changed_reaches_listeners() -> None:
+    """Both recorded groupCoordinatorChanged events reach the listener with their group id."""
+    api = _api()
+    listener = Mock()
+    api.subscribe_group_coordinator_changed(listener)
+
+    api._handle_incoming_message(COORDINATOR_UPDATED)
+    api._handle_incoming_message(COORDINATOR_MOVED)
+    await _drain()
+
+    assert listener.call_args_list == [
+        call(OFFICE_GROUP, COORDINATOR_UPDATED[1]),
+        call(OFFICE_GROUP, COORDINATOR_MOVED[1]),
+    ]
+
+
+async def test_group_coordinator_changed_listener_can_stop() -> None:
+    """A stopped listener gets no further events; stopping twice is harmless."""
+    api = _api()
+    listener = Mock()
+    unsubscribe = api.subscribe_group_coordinator_changed(listener)
+
+    unsubscribe()
+    unsubscribe()
+    api._handle_incoming_message(COORDINATOR_MOVED)
+    await _drain()
+
+    listener.assert_not_called()
+
+
+async def test_group_coordinator_changed_without_group_is_ignored() -> None:
+    """An event without a groupId in its header is not forwarded."""
+    api = _api()
+    listener = Mock()
+    api.subscribe_group_coordinator_changed(listener)
+
+    header = {key: value for key, value in COORDINATOR_MOVED[0].items() if key != "groupId"}
+    api._handle_incoming_message((header, COORDINATOR_MOVED[1]))
+    await _drain()
+
+    listener.assert_not_called()
+
+
+async def test_session_error_routed_to_session_error_callback() -> None:
+    """An unsolicited sessionError reaches the error callback of its session."""
+    api = _api()
+    api._playback_session._handle_subscribe = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
+    error_callback = Mock()
+    unsubscribe = await api.playback_session.subscribe("session1", Mock(), error_callback)
+    error = {"errorCode": "ERROR_SESSION_EVICTED", "reason": "Another user joined the session."}
+
+    api._handle_incoming_message(({"type": "sessionError", "sessionId": "session1"}, error))
+    await _drain()
+
+    error_callback.assert_called_once_with(error)
+    unsubscribe()
+    assert "session1" not in api.playback_session._error_listeners
+
+
+async def test_session_info_and_audio_clip_status_reach_their_listeners() -> None:
+    """The sessionInfo and audioClipStatus events are routed by their event type."""
+    api = _api()
+    session_listener = Mock()
+    clip_listener = Mock()
+    api.playback_session._listeners["session1"] = session_listener
+    api.audio_clip._listeners["RINCON_F0F6C1CC8D0401400"] = clip_listener
+    clips = {"_objectType": "audioClipStatus", "audioClips": []}
+
+    api._handle_incoming_message(
+        ({"type": "sessionInfo", "sessionId": "session1"}, {"suspended": True}),
+    )
+    api._handle_incoming_message(
+        ({"type": "audioClipStatus", "playerId": "RINCON_F0F6C1CC8D0401400"}, clips),
+    )
+    await _drain()
+
+    session_listener.assert_called_once_with({"suspended": True})
+    clip_listener.assert_called_once_with(clips)

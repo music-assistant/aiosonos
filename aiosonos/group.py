@@ -16,24 +16,36 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import suppress
+from functools import partial
 from typing import TYPE_CHECKING
 
 from aiosonos.api.models import ContainerType, MetadataStatus, MusicService, PlayBackState
 from aiosonos.api.models import GroupVolume as GroupVolumeData
 from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
 from aiosonos.api.models import PlayModes as PlayModesData
-from aiosonos.const import EventType, GroupEvent, PlaybackErrorEvent
+from aiosonos.const import EventType, GroupEvent, PlaybackErrorEvent, SessionErrorEvent
 from aiosonos.exceptions import CommandTimeout, FailedCommand, InvalidState
 
 from .api.models import PlaybackActions as PlaybackActionsData
 
 if TYPE_CHECKING:
-    from aiosonos.api.models import Container, PlaybackError, SessionStatus, Track
+    from collections.abc import Callable
+
+    from aiosonos.api.models import (
+        Container,
+        PlaybackError,
+        SessionError,
+        SessionInfo,
+        SessionStatus,
+        Track,
+    )
 
     from .api.models import Group as GroupData
     from .client import SonosLocalApiClient
 
 _LOGGER = logging.getLogger(__name__)
+
+SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
 
 
 class SonosGroup:
@@ -72,6 +84,7 @@ class SonosGroup:
         self._playback_metadata_data: MetadataStatus = MetadataStatus(objectType="metadataStatus")
         self._playback_status_last_updated: float = 0.0
         self._unsubscribe_callbacks = []
+        self._unsubscribe_session: Callable[[], None] | None = None
 
     def cleanup(self) -> None:
         """Handle cleanup on deletion."""
@@ -82,6 +95,7 @@ class SonosGroup:
             with suppress(InvalidState):
                 unsubscribe_callback()
         self._unsubscribe_callbacks = []
+        self._stop_session_listener()
 
     @property
     def is_subscribed(self) -> bool:
@@ -104,13 +118,18 @@ class SonosGroup:
         """Handle Async initialization.
 
         Reads the group's status and subscribes to its updates. A remote group
-        (one the connected player does not coordinate) is refused by the player
-        with ``groupCoordinatorChanged`` and left without subscriptions, as its
-        coordinator's connection is the one that tracks it. The same refusal for
-        a group this player coordinates is transient (the player is still
-        settling into the role), so it is raised like any other failure for the
-        caller to retry; whatever was subscribed before the failure is undone.
+        (one the connected player does not coordinate) is left without status
+        and subscriptions and no command is sent for it: the player refuses
+        them with ``groupCoordinatorChanged``, as its coordinator's connection
+        is the one that tracks it. The same refusal for a group this player
+        coordinates is transient (the player is still settling into the role),
+        so it is raised like any other failure for the caller to retry;
+        whatever was subscribed before the failure is undone.
         """
+        if not self.coordinated_by_client:
+            self.cleanup()
+            self._clear_status()
+            return
         # grab playback data and setup subscription
         try:
             self._volume_data = await self.client.api.group_volume.get_volume(self.id)
@@ -147,11 +166,7 @@ class SonosGroup:
             )
         except FailedCommand as err:
             self.cleanup()
-            self._volume_data = {}
-            self._playback_status_data = {}
-            self._playback_actions = PlaybackActions({})
-            self._play_modes = PlayModes({})
-            self._playback_metadata_data = {}
+            self._clear_status()
             if err.error_code == "groupCoordinatorChanged" and not self.coordinated_by_client:
                 # retrieving group details is not possible for remote groups when
                 # connected to a player's local websocket.
@@ -162,6 +177,14 @@ class SonosGroup:
             # a dropped connection, a timeout: undo any subscription made so far
             self.cleanup()
             raise
+
+    def _clear_status(self) -> None:
+        """Drop the group's status, for a group this player cannot read it from."""
+        self._volume_data = {}
+        self._playback_status_data = {}
+        self._playback_actions = PlaybackActions({})
+        self._play_modes = PlayModes({})
+        self._playback_metadata_data = {}
 
     @property
     def name(self) -> str:
@@ -368,7 +391,16 @@ class SonosGroup:
         account_id: str | None = None,
         custom_data: dict | None = None,
     ) -> SessionStatus:
-        """Create a new Playback Session."""
+        """
+        Create a new Playback Session.
+
+        The session is subscribed to, so an eviction (another app or source took
+        over the group) clears active_session_id and is signalled as a
+        SESSION_ERROR event. A refused subscription does not fail the session.
+        """
+        # the new session replaces (evicts) the previous one: stop listening to
+        # that first, so its eviction is not reported as an error
+        self._stop_session_listener()
         session = await self.client.api.playback_session.create_session(
             self.id,
             app_id,
@@ -376,7 +408,16 @@ class SonosGroup:
             account_id,
             custom_data,
         )
-        self.active_session_id = session["sessionId"]
+        session_id = session["sessionId"]
+        self.active_session_id = session_id
+        try:
+            self._unsubscribe_session = await self.client.api.playback_session.subscribe(
+                session_id,
+                self._handle_session_info,
+                partial(self._handle_session_error, session_id),
+            )
+        except FailedCommand as err:
+            _LOGGER.debug("Could not subscribe to session %s: %s", session_id, err)
         return session
 
     async def play_stream_url(self, url: str, metadata: Container) -> None:
@@ -483,6 +524,35 @@ class SonosGroup:
                 EventType.PLAYBACK_ERROR,
                 self.id,
                 data,
+            ),
+        )
+
+    def _stop_session_listener(self) -> None:
+        """Stop listening to the previous playback session (if any)."""
+        if self._unsubscribe_session is None:
+            return
+        unsubscribe, self._unsubscribe_session = self._unsubscribe_session, None
+        with suppress(InvalidState):
+            unsubscribe()
+
+    def _handle_session_info(self, data: SessionInfo) -> None:
+        """Handle sessionInfo event (session suspended or resumed)."""
+        _LOGGER.debug("Session info for group %s: %s", self.id, data)
+
+    def _handle_session_error(self, session_id: str, data: SessionError) -> None:
+        """Handle sessionError event, e.g. an eviction by another app or source."""
+        if session_id != self.active_session_id:
+            # a session this group already replaced or stopped
+            _LOGGER.debug("Error for inactive session %s: %s", session_id, data)
+            return
+        if data.get("errorCode") == SESSION_EVICTED_ERROR:
+            # the group is no longer under this session's control
+            self.active_session_id = None
+        self.client.signal_event(
+            SessionErrorEvent(
+                EventType.SESSION_ERROR,
+                self.id,
+                {**data, "sessionId": session_id},
             ),
         )
 

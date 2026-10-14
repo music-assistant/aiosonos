@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from aiosonos.api.models import AudioClipLEDBehavior, AudioClipType
-from aiosonos.const import EventType, PlayerEvent
+from aiosonos.const import AudioClipStatusChangedEvent, EventType, PlayerEvent
+from aiosonos.exceptions import FailedCommand
 
 if TYPE_CHECKING:
     from aiosonos.group import SonosGroup
 
+    from .api.models import AudioClip, AudioClipStatus, AudioClipStatusEvent
     from .api.models import Player as PlayerData
     from .api.models import PlayerVolume as PlayerVolumeData
     from .client import SonosLocalApiClient
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class SonosPlayer:
@@ -25,6 +30,8 @@ class SonosPlayer:
         self.client = client
         self._data = data
         self._volume_data: PlayerVolumeData | None = None
+        self._audio_clips: dict[str, AudioClip] = {}
+        self._audio_clips_subscribed = False
         for group in client.groups:
             if group.coordinator_id == self.id or self.id in group.player_ids:
                 self._active_group = group
@@ -127,14 +134,27 @@ class SonosPlayer:
             player_ids_to_remove=[],
         )
 
+    def audio_clip_status(self, clip_id: str) -> AudioClipStatus | None:
+        """Return the status of an audio clip in the player's last audioClipStatus event."""
+        if clip := self._audio_clips.get(clip_id):
+            return clip["status"]
+        return None
+
     async def play_audio_clip(
         self,
         url: str,
         volume: int | None = None,
         name: str | None = None,
-    ) -> None:
-        """Play an audio clip (announcement) on the player."""
-        await self.client.api.audio_clip.load_audio_clip(
+    ) -> AudioClip:
+        """
+        Play an audio clip (announcement) on the player.
+
+        Returns the clip as the player accepted it. Its status changes
+        (ACTIVE, DONE, ...) are signalled as AUDIO_CLIP_STATUS events and
+        available from audio_clip_status().
+        """
+        await self._subscribe_audio_clips()
+        return await self.client.api.audio_clip.load_audio_clip(
             self.id,
             name=name or "aiosonos",
             app_id="aiosonos",
@@ -147,6 +167,29 @@ class SonosPlayer:
     async def load_home_theater_playback(self) -> None:
         """Load Home Theater playback."""
         await self.client.api.home_theater.load_home_theater_playback(self.id)
+
+    async def _subscribe_audio_clips(self) -> None:
+        """Subscribe to this player's audio clip status, once."""
+        if self._audio_clips_subscribed:
+            return
+        try:
+            await self.client.api.audio_clip.subscribe(self.id, self._handle_audio_clip_status)
+        except FailedCommand as err:
+            # the clip can still be played, only its status is not followed
+            _LOGGER.debug("Could not subscribe to audio clips of %s: %s", self.id, err)
+            return
+        self._audio_clips_subscribed = True
+
+    def _handle_audio_clip_status(self, data: AudioClipStatusEvent) -> None:
+        """Handle audioClipStatus event (it lists every clip the player tracks)."""
+        self._audio_clips = {clip["id"]: clip for clip in data.get("audioClips", [])}
+        self.client.signal_event(
+            AudioClipStatusChangedEvent(
+                EventType.AUDIO_CLIP_STATUS,
+                self.id,
+                data,
+            ),
+        )
 
     def update_data(self, data: PlayerData) -> None:
         """Update the player data."""

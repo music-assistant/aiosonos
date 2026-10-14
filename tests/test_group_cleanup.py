@@ -48,6 +48,7 @@ def test_removed_group_is_cleaned_up() -> None:
 async def test_normal_add_signals_group_added_once() -> None:
     """A successful group setup signals GROUP_ADDED exactly once."""
     client = SonosLocalApiClient("1.2.3.4", MagicMock())
+    client._player_id = "RINCON_ME"
     client.signal_event = MagicMock()
     api = MagicMock()
     api.group_volume.get_volume = AsyncMock(return_value={})
@@ -60,7 +61,7 @@ async def test_normal_add_signals_group_added_once() -> None:
     api.playback_metadata.subscribe = AsyncMock(return_value=Mock())
     client.api = api
 
-    await client._setup_group({"id": "group1"})
+    await client._setup_group({"id": "group1", "coordinatorId": "RINCON_ME"})
 
     client.signal_event.assert_called_once()
     event = client.signal_event.call_args.args[0]
