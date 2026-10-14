@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,7 @@ class SonosPlayer:
         self._volume_data: PlayerVolumeData | None = None
         self._audio_clips: dict[str, AudioClip] = {}
         self._audio_clips_subscribed = False
+        self._audio_clips_lock = asyncio.Lock()
         for group in client.groups:
             if group.coordinator_id == self.id or self.id in group.player_ids:
                 self._active_group = group
@@ -170,16 +172,18 @@ class SonosPlayer:
 
     async def _subscribe_audio_clips(self) -> None:
         """Subscribe to this player's audio clip status, once."""
-        if self._audio_clips_subscribed:
-            return
-        # set before the await, so clips played at the same time subscribe only once
-        self._audio_clips_subscribed = True
-        try:
-            await self.client.api.audio_clip.subscribe(self.id, self._handle_audio_clip_status)
-        except FailedCommand as err:
-            # the clip can still be played, only its status is not followed
-            _LOGGER.debug("Could not subscribe to audio clips of %s: %s", self.id, err)
-            self._audio_clips_subscribed = False
+        # clips played at the same time wait for the one subscription, so none is
+        # loaded before its status is followed
+        async with self._audio_clips_lock:
+            if self._audio_clips_subscribed:
+                return
+            try:
+                await self.client.api.audio_clip.subscribe(self.id, self._handle_audio_clip_status)
+            except FailedCommand as err:
+                # the clip can still be played, only its status is not followed
+                _LOGGER.debug("Could not subscribe to audio clips of %s: %s", self.id, err)
+                return
+            self._audio_clips_subscribed = True
 
     def _handle_audio_clip_status(self, data: AudioClipStatusEvent) -> None:
         """Handle audioClipStatus event (it lists every clip the player tracks)."""

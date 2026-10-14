@@ -302,3 +302,77 @@ async def test_clips_played_together_subscribe_once() -> None:
     await asyncio.gather(first, second)
 
     client.api.audio_clip.subscribe.assert_awaited_once()
+
+
+async def test_refused_concurrent_replacement_keeps_the_first_session_monitored() -> None:
+    """A second session refused while the first one subscribes leaves the first one watched."""
+    client = _client()
+    subscribed = asyncio.Event()
+    unsubscribe = Mock()
+
+    async def _subscribe(*_: object) -> Mock:
+        await subscribed.wait()
+        return unsubscribe
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.playback_session.create_session = AsyncMock(
+        side_effect=[{"sessionId": "session1"}, FailedCommand("ERROR_SESSION_IN_PROGRESS")],
+    )
+    group = _group(client)
+
+    first = asyncio.ensure_future(group.create_playback_session())
+    await asyncio.sleep(0)
+    with pytest.raises(FailedCommand):
+        await group.create_playback_session()
+    subscribed.set()
+    await first
+
+    unsubscribe.assert_not_called()
+    assert group._unsubscribe_session is unsubscribe
+    _session_error_callback(client, 0)(EVICTED)
+    assert group.active_session_id is None
+
+
+async def test_a_clip_played_meanwhile_waits_for_the_subscription() -> None:
+    """No clip is loaded before the audioClip subscription is in place."""
+    client = _client()
+    subscribed = asyncio.Event()
+
+    async def _subscribe(*_: object) -> None:
+        await subscribed.wait()
+
+    client.api.audio_clip.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.audio_clip.load_audio_clip = AsyncMock(return_value=_clip("ACTIVE"))
+    player = _player(client)
+
+    first = asyncio.ensure_future(player.play_audio_clip("http://host/a.mp3"))
+    second = asyncio.ensure_future(player.play_audio_clip("http://host/b.mp3"))
+    await asyncio.sleep(0.01)
+    client.api.audio_clip.load_audio_clip.assert_not_awaited()
+    subscribed.set()
+    await asyncio.gather(first, second)
+
+    assert client.api.audio_clip.load_audio_clip.await_count == 2
+
+
+async def test_a_cancelled_clip_subscription_is_tried_again() -> None:
+    """A subscription cut short leaves the player unsubscribed, so the next clip subscribes."""
+    client = _client()
+    never = asyncio.Event()
+
+    async def _subscribe(*_: object) -> None:
+        await never.wait()
+
+    client.api.audio_clip.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.audio_clip.load_audio_clip = AsyncMock(return_value=_clip("ACTIVE"))
+    player = _player(client)
+
+    attempt = asyncio.ensure_future(player.play_audio_clip("http://host/a.mp3"))
+    await asyncio.sleep(0)
+    attempt.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await attempt
+    client.api.audio_clip.subscribe = AsyncMock()
+    await player.play_audio_clip("http://host/a.mp3")
+
+    client.api.audio_clip.subscribe.assert_awaited_once()

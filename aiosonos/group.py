@@ -85,9 +85,9 @@ class SonosGroup:
         self._playback_status_last_updated: float = 0.0
         self._unsubscribe_callbacks = []
         self._unsubscribe_session: Callable[[], None] | None = None
-        # advanced by cleanup and by every new session, so a subscription that
-        # completes after either is undone instead of installed
-        self._session_generation = 0
+        # advanced by cleanup, so a session subscription that completes after it
+        # is undone instead of installed
+        self._cleanup_generation = 0
         # the session a replacement is under way for, and an error held back for it
         self._replacing_session_id: str | None = None
         self._deferred_session_error: tuple[str, SessionError] | None = None
@@ -101,7 +101,7 @@ class SonosGroup:
             with suppress(InvalidState):
                 unsubscribe_callback()
         self._unsubscribe_callbacks = []
-        self._session_generation += 1
+        self._cleanup_generation += 1
         self._stop_session_listener()
 
     @property
@@ -405,8 +405,7 @@ class SonosGroup:
         over the group) clears active_session_id and is signalled as a
         SESSION_ERROR event. A refused subscription does not fail the session.
         """
-        self._session_generation += 1
-        generation = self._session_generation
+        generation = self._cleanup_generation
         # the new session replaces (evicts) the previous one: an error for that one
         # is held back until the replacement succeeded (dropped) or failed (handled)
         self._replacing_session_id = self.active_session_id
@@ -424,7 +423,7 @@ class SonosGroup:
         self._end_session_replacement(replaced=True)
         session_id = session["sessionId"]
         self.active_session_id = session_id
-        if generation != self._session_generation:
+        if generation != self._cleanup_generation:
             # cleaned up while the session was created: nothing to listen for
             return session
         try:
@@ -436,11 +435,13 @@ class SonosGroup:
         except FailedCommand as err:
             _LOGGER.debug("Could not subscribe to session %s: %s", session_id, err)
             return session
-        if generation != self._session_generation:
-            # the group was cleaned up, or a newer session created, in the meantime
+        if generation != self._cleanup_generation or self.active_session_id != session_id:
+            # the group was cleaned up, or another session took over, in the meantime;
+            # a newer session that was refused leaves this one active, and monitored
             with suppress(InvalidState):
                 unsubscribe()
         else:
+            self._stop_session_listener()
             self._unsubscribe_session = unsubscribe
         return session
 
