@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
+
 from aiosonos.api.models import GroupStatus
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType
@@ -67,25 +69,108 @@ async def test_error_for_a_replaced_session_is_ignored() -> None:
 
 
 async def test_new_session_unsubscribes_the_previous_one() -> None:
-    """The old session's subscription ends before the new session is created."""
+    """The old session's subscription ends once the new session exists."""
     client = _client()
     unsubscribes = [Mock(), Mock()]
     client.api.playback_session.subscribe = AsyncMock(side_effect=unsubscribes)
-    create_session = client.api.playback_session.create_session
     group = _group(client)
+
+    await group.create_playback_session()
     await group.create_playback_session()
 
-    def _create(*_: object) -> dict[str, str]:
-        # the eviction of session1 caused by this command must already be unheard
-        unsubscribes[0].assert_called_once()
-        return {"sessionId": "session2"}
-
-    create_session.side_effect = _create
-    await group.create_playback_session()
-
+    unsubscribes[0].assert_called_once()
     unsubscribes[1].assert_not_called()
     group.cleanup()
     unsubscribes[1].assert_called_once()
+
+
+async def test_eviction_caused_by_a_replacement_is_not_signalled() -> None:
+    """The new session evicts the old one; that eviction is not reported as an error."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+
+    def _create(*_: object) -> dict[str, str]:
+        first_error_callback(EVICTED)
+        return {"sessionId": "session2"}
+
+    client.api.playback_session.create_session.side_effect = _create
+    await group.create_playback_session()
+
+    assert group.active_session_id == "session2"
+    client.signal_event.assert_not_called()
+
+
+async def test_refused_replacement_keeps_watching_the_old_session() -> None:
+    """When the new session is refused, the old one stays monitored for evictions."""
+    client = _client()
+    unsubscribes = [Mock(), Mock()]
+    client.api.playback_session.subscribe = AsyncMock(side_effect=unsubscribes)
+    group = _group(client)
+    await group.create_playback_session()
+    client.api.playback_session.create_session.side_effect = FailedCommand(
+        "ERROR_SESSION_IN_PROGRESS"
+    )
+
+    with pytest.raises(FailedCommand):
+        await group.create_playback_session()
+    _session_error_callback(client, 0)(EVICTED)
+
+    unsubscribes[0].assert_not_called()
+    assert group.active_session_id is None
+    assert client.signal_event.call_args.args[0].event_type == EventType.SESSION_ERROR
+
+
+async def test_eviction_during_a_refused_replacement_still_counts() -> None:
+    """An eviction held back while a replacement was tried is handled when it fails."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+
+    def _create(*_: object) -> dict[str, str]:
+        first_error_callback(EVICTED)
+        raise FailedCommand("ERROR_SESSION_IN_PROGRESS")
+
+    client.api.playback_session.create_session.side_effect = _create
+    with pytest.raises(FailedCommand):
+        await group.create_playback_session()
+
+    assert group.active_session_id is None
+    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
+
+
+async def test_cleanup_during_a_pending_subscription_undoes_it() -> None:
+    """A subscription that completes after the group was cleaned up is unsubscribed at once."""
+    client = _client()
+    unsubscribe = Mock()
+    group = _group(client)
+
+    async def _subscribe(*_: object) -> Mock:
+        group.cleanup()
+        return unsubscribe
+
+    client.api.playback_session.subscribe = _subscribe
+    await group.create_playback_session()
+
+    unsubscribe.assert_called_once()
+    assert group._unsubscribe_session is None
+
+
+async def test_cleanup_while_the_session_is_created_skips_the_subscription() -> None:
+    """A group cleaned up during createSession does not subscribe to the new session."""
+    client = _client()
+    group = _group(client)
+
+    def _create(*_: object) -> dict[str, str]:
+        group.cleanup()
+        return {"sessionId": "session1"}
+
+    client.api.playback_session.create_session.side_effect = _create
+    await group.create_playback_session()
+
+    client.api.playback_session.subscribe.assert_not_awaited()
 
 
 async def test_refused_session_subscription_keeps_the_session() -> None:
@@ -196,3 +281,24 @@ async def test_client_signals_coordinator_change_for_any_group() -> None:
     assert event.object_id == "RINCON_F0F6C1CC8D0401400:140007645"
     assert event.data["groupStatus"] == GroupStatus.MOVED
     assert event.data["playerId"] == "RINCON_48A6B86DD3F101400"
+
+
+async def test_clips_played_together_subscribe_once() -> None:
+    """Two clips started at the same time share one audioClip subscription."""
+    client = _client()
+    subscribed = asyncio.Event()
+
+    async def _subscribe(*_: object) -> None:
+        await subscribed.wait()
+
+    client.api.audio_clip.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.audio_clip.load_audio_clip = AsyncMock(return_value=_clip("ACTIVE"))
+    player = _player(client)
+
+    first = asyncio.ensure_future(player.play_audio_clip("http://host/a.mp3"))
+    second = asyncio.ensure_future(player.play_audio_clip("http://host/b.mp3"))
+    await asyncio.sleep(0)
+    subscribed.set()
+    await asyncio.gather(first, second)
+
+    client.api.audio_clip.subscribe.assert_awaited_once()

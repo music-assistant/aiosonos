@@ -172,13 +172,14 @@ class SonosPlayer:
         """Subscribe to this player's audio clip status, once."""
         if self._audio_clips_subscribed:
             return
+        # set before the await, so clips played at the same time subscribe only once
+        self._audio_clips_subscribed = True
         try:
             await self.client.api.audio_clip.subscribe(self.id, self._handle_audio_clip_status)
         except FailedCommand as err:
             # the clip can still be played, only its status is not followed
             _LOGGER.debug("Could not subscribe to audio clips of %s: %s", self.id, err)
-            return
-        self._audio_clips_subscribed = True
+            self._audio_clips_subscribed = False
 
     def _handle_audio_clip_status(self, data: AudioClipStatusEvent) -> None:
         """Handle audioClipStatus event (it lists every clip the player tracks)."""
