@@ -85,16 +85,20 @@ class SonosGroup:
         self._playback_metadata_data: MetadataStatus = MetadataStatus(objectType="metadataStatus")
         self._playback_status_last_updated: float = 0.0
         self._unsubscribe_callbacks = []
+        # the session listened to for sessionInfo/sessionError events; kept until another
+        # session takes its place or the group is cleaned up, as a stopped session may be
+        # handed back by the next createSession
+        self._subscribed_session_id: str | None = None
         self._unsubscribe_session: Callable[[], None] | None = None
         # advanced by cleanup, so a session subscription that completes after it
         # is undone instead of installed
         self._cleanup_generation = 0
         # the session a replacement is under way for, and an error held back for it;
-        # one creation at a time, through to its subscription: two under way together
-        # would settle each other's replacement and subscribe to one session twice
+        # one creation at a time, through to its subscription, so two never settle
+        # each other's replacement or subscribe to one session twice
         self._replacing_session_id: str | None = None
         self._deferred_session_error: tuple[str, SessionError] | None = None
-        self._session_replacement_lock = asyncio.Lock()
+        self._session_lock = asyncio.Lock()
 
     def cleanup(self) -> None:
         """Handle cleanup on deletion."""
@@ -410,9 +414,9 @@ class SonosGroup:
         SESSION_ERROR event. A refused subscription does not fail the session.
         """
         generation = self._cleanup_generation
-        async with self._session_replacement_lock:
-            # the new session replaces (evicts) the previous one: an error for that one
-            # is held back until the replacement succeeded (dropped) or failed (handled)
+        async with self._session_lock:
+            # the new session evicts the one in use: an error for that one is held back
+            # until the outcome is known
             self._replacing_session_id = self.active_session_id
             try:
                 session = await self.client.api.playback_session.create_session(
@@ -428,16 +432,20 @@ class SonosGroup:
             session_id = session["sessionId"]
             if session_id == self.active_session_id:
                 # the speaker handed back the session in use: nothing was replaced, so an
-                # error held back for it counts, and its subscription (if any) stays
+                # error held back for it counts
                 self._end_session_replacement(replaced=False)
-                if self.active_session_id != session_id or self._unsubscribe_session is not None:
+                if self.active_session_id != session_id:
+                    # evicted while being asked for: signalled, not revived
                     return session
             else:
-                self._end_session_replacement(replaced=True)
+                # a new session, or the stopped one again
+                self._end_session_replacement(replaced=self.active_session_id is not None)
                 self.active_session_id = session_id
-            if generation != self._cleanup_generation:
-                # cleaned up while the session was created: nothing to listen for
+            if self._subscribed_session_id == session_id or generation != self._cleanup_generation:
+                # listened to already, or cleaned up while the session was created
                 return session
+            # the listener of another session (replaced, or stopped earlier) makes way
+            self._stop_session_listener()
             try:
                 unsubscribe = await self.client.api.playback_session.subscribe(
                     session_id,
@@ -447,13 +455,13 @@ class SonosGroup:
             except FailedCommand as err:
                 _LOGGER.debug("Could not subscribe to session %s: %s", session_id, err)
                 return session
-            if generation != self._cleanup_generation or self.active_session_id != session_id:
-                # the group was cleaned up, or stopped, in the meantime
+            if generation != self._cleanup_generation:
+                # the group was cleaned up in the meantime
                 with suppress(InvalidState):
                     unsubscribe()
-            else:
-                self._stop_session_listener()
-                self._unsubscribe_session = unsubscribe
+                return session
+            self._subscribed_session_id = session_id
+            self._unsubscribe_session = unsubscribe
             return session
 
     async def play_stream_url(self, url: str, metadata: Container) -> None:
@@ -565,21 +573,20 @@ class SonosGroup:
         )
 
     def _end_session_replacement(self, *, replaced: bool) -> None:
-        """Settle the session a replacement was under way for."""
+        """Settle the error held back for the session a replacement was under way for."""
         deferred, self._deferred_session_error = self._deferred_session_error, None
         self._replacing_session_id = None
-        if replaced:
-            # the old session is gone by our own doing: stop listening to it
-            self._stop_session_listener()
-        elif deferred is not None:
-            # the old session stays in use, so what happened to it still counts
+        if deferred is not None and not replaced:
+            # the session stays in use, so what happened to it still counts; replaced,
+            # its eviction was this group's own doing
             self._handle_session_error(*deferred)
 
     def _stop_session_listener(self) -> None:
-        """Stop listening to the previous playback session (if any)."""
+        """Stop listening to the session subscribed to (if any)."""
         if self._unsubscribe_session is None:
             return
         unsubscribe, self._unsubscribe_session = self._unsubscribe_session, None
+        self._subscribed_session_id = None
         with suppress(InvalidState):
             unsubscribe()
 

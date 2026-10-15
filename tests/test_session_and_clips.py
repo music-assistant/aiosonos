@@ -403,6 +403,75 @@ async def test_the_same_session_handed_back_unmonitored_is_subscribed_to() -> No
     assert group.active_session_id == "session1"
 
 
+def _commands(client: SonosLocalApiClient) -> list[str]:
+    """Record the session commands as they go out: subscribe <id>, unsubscribe <id>."""
+    commands: list[str] = []
+
+    async def _subscribe(session_id: str, *_: object) -> Callable[[], None]:
+        commands.append(f"subscribe {session_id}")
+        return lambda: commands.append(f"unsubscribe {session_id}")
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.playback_session.suspend = AsyncMock()
+    return commands
+
+
+async def test_a_stopped_session_handed_back_again_is_still_listened_to() -> None:
+    """After a stop, the same session created again keeps its subscription: no commands."""
+    client = _client()
+    commands = _commands(client)
+    client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "session1"})
+    group = _group(client)
+    await group.create_playback_session()
+    await group.stop()
+    assert group.active_session_id is None
+
+    await group.create_playback_session()
+
+    assert commands == ["subscribe session1"]
+    assert group.active_session_id == "session1"
+    _session_error_callback(client)(EVICTED)
+    assert group.active_session_id is None
+
+
+async def test_a_new_session_after_a_stop_replaces_the_stopped_ones_listener() -> None:
+    """A different session after a stop ends the stopped one's subscription before its own."""
+    client = _client()
+    commands = _commands(client)
+    group = _group(client)
+    await group.create_playback_session()
+    await group.stop()
+
+    await group.create_playback_session()
+
+    assert commands == ["subscribe session1", "unsubscribe session1", "subscribe session2"]
+    assert group.active_session_id == "session2"
+    assert group._subscribed_session_id == "session2"
+
+
+async def test_an_eviction_while_subscribing_is_not_lost() -> None:
+    """An eviction delivered before the subscribe reply ends the session; the next one is new."""
+    client = _client()
+    commands = _commands(client)
+    subscribe = client.api.playback_session.subscribe.side_effect
+
+    async def _subscribe(session_id: str, callback: object, error_callback: object) -> object:
+        if session_id == "session1":
+            error_callback(EVICTED)  # type: ignore[operator]
+        return await subscribe(session_id, callback, error_callback)
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    group = _group(client)
+
+    await group.create_playback_session()
+
+    assert group.active_session_id is None
+    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
+    await group.create_playback_session()
+    assert group.active_session_id == "session2"
+    assert commands == ["subscribe session1", "unsubscribe session1", "subscribe session2"]
+
+
 async def test_a_stream_loads_into_the_session_made_for_it() -> None:
     """A stream whose session is still subscribing is not loaded into a newer session."""
     client = _client()
