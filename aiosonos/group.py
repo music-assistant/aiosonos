@@ -269,8 +269,13 @@ class SonosGroup:
             # this turns out the best way to clear the queue,
             # just send an invalid uri and it will clear the queue
             # and stop any playing content, including linein sources
-            with suppress(FailedCommand):
+            try:
                 await self.play_stream_url("clear", None)
+            except CommandTimeout:
+                # unanswered as well: the caller must not take the stop for done
+                raise
+            except FailedCommand:
+                pass
         finally:
             self.active_session_id = None
 
