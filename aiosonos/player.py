@@ -41,6 +41,11 @@ class SonosPlayer:
         else:
             self._active_group = None
 
+    def cleanup(self) -> None:
+        """Handle cleanup on a new connection: the clip subscription went with the old one."""
+        self._audio_clips_subscribed = False
+        self._audio_clips = {}
+
     async def async_init(self) -> None:
         """Handle Async initialization."""
         # grab volume data and setup subscription
@@ -154,6 +159,10 @@ class SonosPlayer:
         Returns the clip as the player accepted it. Its status changes
         (ACTIVE, DONE, ...) are signalled as AUDIO_CLIP_STATUS events and
         available from audio_clip_status().
+
+        :param url: The URL of the clip to play.
+        :param volume: The volume to play it at; the player's own when omitted.
+        :param name: A user-identifiable name for the clip.
         """
         await self._subscribe_audio_clips()
         return await self.client.api.audio_clip.load_audio_clip(

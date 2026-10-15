@@ -217,6 +217,32 @@ def _clip(status: str) -> dict[str, str]:
     }
 
 
+async def test_a_new_connection_subscribes_to_audio_clips_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """connect() forgets the clip subscription made on the connection it replaces."""
+    client = _client()
+    client.api.audio_clip.subscribe = AsyncMock()
+    client.api.audio_clip.load_audio_clip = AsyncMock(return_value=_clip("ACTIVE"))
+    player = _player(client)
+    client._player = player
+    await player.play_audio_clip("http://host/chime.mp3")
+    player._handle_audio_clip_status({"audioClips": [_clip("ACTIVE")]})  # type: ignore[typeddict-item]
+    discovery = {"playerId": PLAYER, "householdId": "household1", "websocketUrl": "wss://host"}
+    monkeypatch.setattr("aiosonos.client.get_discovery_info", AsyncMock(return_value=discovery))
+    new_api = MagicMock()
+    new_api.connect = AsyncMock()
+    new_api.audio_clip.subscribe = AsyncMock()
+    new_api.audio_clip.load_audio_clip = AsyncMock(return_value=_clip("ACTIVE"))
+    monkeypatch.setattr("aiosonos.client.SonosLocalWebSocketsApi", MagicMock(return_value=new_api))
+
+    await client.connect()
+    assert player.audio_clip_status(_clip("ACTIVE")["id"]) is None
+    await player.play_audio_clip("http://host/chime.mp3")
+
+    new_api.audio_clip.subscribe.assert_awaited_once_with(PLAYER, player._handle_audio_clip_status)
+
+
 async def test_play_audio_clip_returns_the_clip_and_subscribes_once() -> None:
     """The loaded clip is returned; audioClip is subscribed to before the first clip only."""
     client = _client()
@@ -539,23 +565,62 @@ async def test_an_error_after_cleanup_before_the_subscribe_reply_is_ignored() ->
     unsubscribe.assert_called_once()
 
 
-async def test_a_stop_while_subscribing_keeps_the_subscription() -> None:
-    """A session stopped before its subscribe reply stays listened to, as after any stop."""
+async def test_a_stop_ordered_while_subscribing_lands_after_it() -> None:
+    """A stop ordered before the subscribe reply waits for it; the session stays listened to."""
     client = _client()
     commands = _commands(client)
+    subscribed = asyncio.Event()
     subscribe = client.api.playback_session.subscribe.side_effect
     group = _group(client)
 
     async def _subscribe(*args: object) -> object:
-        await group.stop()
+        await subscribed.wait()
         return await subscribe(*args)
 
     client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
-    await group.create_playback_session()
+    creation = asyncio.ensure_future(group.create_playback_session())
+    stop = asyncio.ensure_future(group.stop())
+    await asyncio.sleep(0.01)
+    client.api.playback_session.suspend.assert_not_awaited()
+    subscribed.set()
+    await asyncio.gather(creation, stop)
 
+    client.api.playback_session.suspend.assert_awaited_once_with("session1")
     assert group.active_session_id is None
     assert group._subscribed_session_id == "session1"
     assert commands == ["subscribe session1"]
+
+
+async def test_a_stop_ordered_during_a_play_lands_after_its_load() -> None:
+    """A stop ordered while a queue is being started stops that queue, not an earlier state."""
+    client = _client()
+    _commands(client)
+    subscribed = asyncio.Event()
+    order: list[str] = []
+
+    async def _subscribe(*_: object) -> Mock:
+        await subscribed.wait()
+        return Mock()
+
+    async def _load(session_id: str, **_: object) -> None:
+        order.append(f"load {session_id}")
+
+    async def _suspend(session_id: str) -> None:
+        order.append(f"suspend {session_id}")
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.playback_session.load_cloud_queue = AsyncMock(side_effect=_load)
+    client.api.playback_session.suspend = AsyncMock(side_effect=_suspend)
+    group = _group(client)
+
+    play = asyncio.ensure_future(group.play_cloud_queue("http://host/queue/"))
+    stop = asyncio.ensure_future(group.stop())
+    await asyncio.sleep(0.01)
+    subscribed.set()
+    await asyncio.gather(play, stop)
+
+    assert order == ["load session1", "suspend session1"]
+    assert group.active_session_id is None
 
 
 async def test_an_unanswered_session_subscribe_is_a_warning(
@@ -606,17 +671,20 @@ async def test_a_new_connection_undoes_the_groups_subscriptions(
     assert group._subscribed_session_id == "session1"
 
 
-async def test_a_failed_status_setup_keeps_the_session_subscription() -> None:
+@pytest.mark.parametrize(
+    "failure",
+    [FailedCommand("ERROR_COMMAND_FAILED"), InvalidState("Not connected")],
+    ids=["refused", "disconnected"],
+)
+async def test_a_failed_status_setup_keeps_the_session_subscription(failure: Exception) -> None:
     """A group setup that fails (and is retried) undoes its own subscriptions only."""
     client = _client()
     commands = _commands(client)
     group = _group(client)
     await group.create_playback_session()
-    client.api.group_volume.get_volume = AsyncMock(
-        side_effect=FailedCommand("ERROR_COMMAND_FAILED")
-    )
+    client.api.group_volume.get_volume = AsyncMock(side_effect=failure)
 
-    with pytest.raises(FailedCommand):
+    with pytest.raises(type(failure)):
         await group.async_init()
 
     assert commands == ["subscribe session1"]
@@ -818,3 +886,154 @@ async def test_a_cancelled_clip_subscription_is_tried_again() -> None:
     await player.play_audio_clip("http://host/a.mp3")
 
     client.api.audio_clip.subscribe.assert_awaited_once()
+
+
+async def test_a_cancelled_session_subscription_leaves_no_session_behind() -> None:
+    """A creation cut short while subscribing vouches for no session; the next play makes one."""
+    client = _client()
+    never = asyncio.Event()
+
+    async def _subscribe(*_: object) -> Mock:
+        await never.wait()
+        return Mock()
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.playback_session.load_cloud_queue = AsyncMock()
+    group = _group(client)
+
+    attempt = asyncio.ensure_future(group.create_playback_session())
+    await asyncio.sleep(0.01)
+    attempt.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await attempt
+    assert group.active_session_id is None
+    client.api.playback_session.subscribe = AsyncMock(side_effect=lambda *_: Mock())
+    await group.play_cloud_queue("http://host/queue/")
+
+    assert client.api.playback_session.create_session.await_count == 2
+    assert client.api.playback_session.load_cloud_queue.await_args.args[0] == "session2"
+    assert group._subscribed_session_id == "session2"
+
+
+async def test_queues_started_together_load_in_order() -> None:
+    """A queue started while the session is subscribing loads after the one that made it."""
+    client = _client()
+    subscribed = asyncio.Event()
+
+    async def _subscribe(*_: object) -> Mock:
+        await subscribed.wait()
+        return Mock()
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.playback_session.load_cloud_queue = AsyncMock()
+    group = _group(client)
+
+    first = asyncio.ensure_future(group.play_cloud_queue("http://host/a/"))
+    second = asyncio.ensure_future(group.play_cloud_queue("http://host/b/"))
+    await asyncio.sleep(0.01)
+    client.api.playback_session.load_cloud_queue.assert_not_awaited()
+    subscribed.set()
+    await asyncio.gather(first, second)
+
+    loads = client.api.playback_session.load_cloud_queue.await_args_list
+    assert [load.args[0] for load in loads] == ["session1", "session1"]
+    assert [load.kwargs["queue_base_url"] for load in loads] == ["http://host/a/", "http://host/b/"]
+    client.api.playback_session.create_session.assert_awaited_once()
+
+
+async def test_a_queue_started_during_an_evicted_creation_gets_its_own_session() -> None:
+    """A queue waiting on a creation that ends evicted is loaded into a session of its own."""
+    client = _client()
+    subscribed = asyncio.Event()
+
+    async def _subscribe(session_id: str, _callback: object, error_callback: object) -> Mock:
+        if session_id == "session1":
+            await subscribed.wait()
+            error_callback(EVICTED)  # type: ignore[operator]
+        return Mock()
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.playback_session.load_cloud_queue = AsyncMock()
+    group = _group(client)
+
+    first = asyncio.ensure_future(group.play_cloud_queue("http://host/a/"))
+    second = asyncio.ensure_future(group.play_cloud_queue("http://host/b/"))
+    await asyncio.sleep(0.01)
+    subscribed.set()
+    with pytest.raises(FailedCommand):
+        await first
+    await second
+
+    loads = client.api.playback_session.load_cloud_queue.await_args_list
+    assert [(load.args[0], load.kwargs["queue_base_url"]) for load in loads] == [
+        ("session2", "http://host/b/"),
+    ]
+    assert group.active_session_id == "session2"
+
+
+async def test_a_cleanup_after_a_deferred_eviction_is_moot() -> None:
+    """An eviction held back during createSession is dropped when the group is cleaned up."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+    client.signal_event.reset_mock()
+
+    def _create(*_: object) -> dict[str, str]:
+        first_error_callback(EVICTED)
+        group.cleanup()
+        return {"sessionId": "session1"}
+
+    client.api.playback_session.create_session.side_effect = _create
+    with pytest.raises(InvalidState):
+        await group.create_playback_session()
+
+    client.signal_event.assert_not_called()
+    assert group.active_session_id is None
+    assert group._deferred_session_error is None
+
+
+async def test_a_creation_cancelled_while_unanswered_settles_the_replacement() -> None:
+    """A creation cut short before its reply replays the error held back for the old session."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+    client.signal_event.reset_mock()
+    never = asyncio.Event()
+
+    async def _create(*_: object) -> dict[str, str]:
+        await never.wait()
+        return {"sessionId": "session2"}
+
+    client.api.playback_session.create_session = AsyncMock(side_effect=_create)
+    creation = asyncio.ensure_future(group.create_playback_session())
+    await asyncio.sleep(0.01)
+    first_error_callback(EVICTED)
+    creation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await creation
+
+    assert group._replacing_session_id is None
+    assert group._deferred_session_error is None
+    assert group.active_session_id is None
+    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
+
+
+async def test_a_stop_whose_clear_session_is_cleaned_up_loads_nothing() -> None:
+    """The clear-path creation of a stop raises InvalidState past the stop, and loads nothing."""
+    client = _client()
+    group = _group(client)
+    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
+    client.api.playback_session.load_stream_url = AsyncMock()
+
+    async def _subscribe(*_: object) -> Mock:
+        group.cleanup()
+        return Mock()
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    with pytest.raises(InvalidState):
+        await group.stop()
+
+    client.api.playback_session.load_stream_url.assert_not_awaited()
+    assert group.active_session_id is None
