@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -13,6 +14,11 @@ from aiosonos.const import EventType
 from aiosonos.exceptions import FailedCommand
 from aiosonos.group import SonosGroup
 from aiosonos.player import SonosPlayer
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from aiosonos.api.models import Container
 
 PLAYER = "RINCON_F0F6C1CC8D0401400"
 EVICTED = {"errorCode": "ERROR_SESSION_EVICTED", "reason": "Another user joined the session."}
@@ -305,7 +311,7 @@ async def test_clips_played_together_subscribe_once() -> None:
 
 
 async def test_refused_concurrent_replacement_keeps_the_first_session_monitored() -> None:
-    """A second session refused while the first one subscribes leaves the first one watched."""
+    """A second session asked for while the first one subscribes waits; refused, nothing changes."""
     client = _client()
     subscribed = asyncio.Event()
     unsubscribe = Mock()
@@ -321,16 +327,66 @@ async def test_refused_concurrent_replacement_keeps_the_first_session_monitored(
     group = _group(client)
 
     first = asyncio.ensure_future(group.create_playback_session())
-    await asyncio.sleep(0)
-    with pytest.raises(FailedCommand):
-        await group.create_playback_session()
+    second = asyncio.ensure_future(group.create_playback_session())
+    await asyncio.sleep(0.01)
+    assert client.api.playback_session.create_session.await_count == 1
     subscribed.set()
     await first
+    with pytest.raises(FailedCommand):
+        await second
 
     unsubscribe.assert_not_called()
     assert group._unsubscribe_session is unsubscribe
     _session_error_callback(client, 0)(EVICTED)
     assert group.active_session_id is None
+
+
+async def test_the_same_session_handed_back_twice_is_listened_to_once() -> None:
+    """Two creations answered with one session id leave one listener, undone cleanly."""
+    client = _client()
+    listeners: dict[str, object] = {}
+
+    async def _subscribe(session_id: str, callback: object, *_: object) -> Callable[[], None]:
+        # as the namespace does: one listener per session id, gone on unsubscribe
+        await asyncio.sleep(0)
+        listeners[session_id] = callback
+        return lambda: listeners.pop(session_id)
+
+    client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "session1"})
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    group = _group(client)
+
+    await asyncio.gather(group.create_playback_session(), group.create_playback_session())
+
+    assert list(listeners) == ["session1"]
+    group.cleanup()
+    assert listeners == {}
+
+
+async def test_a_stream_loads_into_the_session_made_for_it() -> None:
+    """A stream whose session is still subscribing is not loaded into a newer session."""
+    client = _client()
+    subscribed = asyncio.Event()
+
+    async def _subscribe(session_id: str, *_: object) -> Mock:
+        if session_id == "session1":
+            await subscribed.wait()
+        return Mock()
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.playback_session.load_stream_url = AsyncMock()
+    group = _group(client)
+
+    first = asyncio.ensure_future(group.play_stream_url("http://host/a", cast("Container", {})))
+    second = asyncio.ensure_future(group.play_stream_url("http://host/b", cast("Container", {})))
+    await asyncio.sleep(0.01)
+    subscribed.set()
+    await asyncio.gather(first, second)
+
+    loads = client.api.playback_session.load_stream_url.await_args_list
+    assert [load.args[0] for load in loads] == ["session1", "session2"]
+    assert [load.kwargs["stream_url"] for load in loads] == ["http://host/a", "http://host/b"]
+    assert group.active_session_id == "session2"
 
 
 async def test_overlapping_replacements_do_not_report_a_takeover() -> None:

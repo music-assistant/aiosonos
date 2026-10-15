@@ -275,14 +275,24 @@ class PlaybackSessionNameSpace(SonosNameSpace):
         Reference:
         https://docs.sonos.com/reference/playbacksession-subscribe-sessionid
         """
-        unsubscribe = await self._handle_subscribe(session_id, callback)
-        if error_callback is None:
-            self._error_listeners.pop(session_id, None)
-        else:
+        # listening from before the reply, so an error in the meantime is not lost
+        previous = self._error_listeners.pop(session_id, None)
+        if error_callback is not None:
             self._error_listeners[session_id] = error_callback
+        try:
+            unsubscribe = await self._handle_subscribe(session_id, callback)
+        except BaseException:
+            if self._error_listeners.get(session_id) is error_callback:
+                # nothing newer was registered since: put back what was there
+                if previous is None:
+                    self._error_listeners.pop(session_id, None)
+                else:
+                    self._error_listeners[session_id] = previous
+            raise
 
         def _unsubscribe() -> None:
-            self._error_listeners.pop(session_id, None)
+            if self._error_listeners.get(session_id) is error_callback:
+                self._error_listeners.pop(session_id, None)
             unsubscribe()
 
         return _unsubscribe

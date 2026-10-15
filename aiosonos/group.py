@@ -90,7 +90,8 @@ class SonosGroup:
         # is undone instead of installed
         self._cleanup_generation = 0
         # the session a replacement is under way for, and an error held back for it;
-        # one replacement at a time, so they never settle each other's
+        # one creation at a time, through to its subscription: two under way together
+        # would settle each other's replacement and subscribe to one session twice
         self._replacing_session_id: str | None = None
         self._deferred_session_error: tuple[str, SessionError] | None = None
         self._session_replacement_lock = asyncio.Lock()
@@ -427,33 +428,32 @@ class SonosGroup:
             self._end_session_replacement(replaced=True)
             session_id = session["sessionId"]
             self.active_session_id = session_id
-        if generation != self._cleanup_generation:
-            # cleaned up while the session was created: nothing to listen for
+            if generation != self._cleanup_generation:
+                # cleaned up while the session was created: nothing to listen for
+                return session
+            try:
+                unsubscribe = await self.client.api.playback_session.subscribe(
+                    session_id,
+                    self._handle_session_info,
+                    partial(self._handle_session_error, session_id),
+                )
+            except FailedCommand as err:
+                _LOGGER.debug("Could not subscribe to session %s: %s", session_id, err)
+                return session
+            if generation != self._cleanup_generation or self.active_session_id != session_id:
+                # the group was cleaned up, or stopped, in the meantime
+                with suppress(InvalidState):
+                    unsubscribe()
+            else:
+                self._stop_session_listener()
+                self._unsubscribe_session = unsubscribe
             return session
-        try:
-            unsubscribe = await self.client.api.playback_session.subscribe(
-                session_id,
-                self._handle_session_info,
-                partial(self._handle_session_error, session_id),
-            )
-        except FailedCommand as err:
-            _LOGGER.debug("Could not subscribe to session %s: %s", session_id, err)
-            return session
-        if generation != self._cleanup_generation or self.active_session_id != session_id:
-            # the group was cleaned up, or another session took over, in the meantime;
-            # a newer session that was refused leaves this one active, and monitored
-            with suppress(InvalidState):
-                unsubscribe()
-        else:
-            self._stop_session_listener()
-            self._unsubscribe_session = unsubscribe
-        return session
 
     async def play_stream_url(self, url: str, metadata: Container) -> None:
         """Create a new playback session and start playing a single (radio) stream URL."""
-        await self.create_playback_session()
+        session = await self.create_playback_session()
         await self.client.api.playback_session.load_stream_url(
-            self.active_session_id,
+            session["sessionId"],
             stream_url=url,
             play_on_completion=True,
             station_metadata=metadata,
@@ -475,10 +475,11 @@ class SonosGroup:
         For all options, see:
         https://docs.sonos.com/reference/playbacksession-loadcloudqueue-sessionid
         """
-        if not self.active_session_id:
-            await self.create_playback_session()
+        session_id = self.active_session_id
+        if not session_id:
+            session_id = (await self.create_playback_session())["sessionId"]
         await self.client.api.playback_session.load_cloud_queue(
-            self.active_session_id,
+            session_id,
             queue_base_url=queue_base_url,
             http_authorization=http_authorization,
             use_http_authorization_for_media=use_http_authorization_for_media,

@@ -276,6 +276,7 @@ class SonosLocalApiClient:
                 continue
             remaining = [x for x in group.player_ids if x not in reported_players]
             group.update_data(cast("GroupData", {"id": group.id, "playerIds": remaining}))
+
     def _handle_group_coordinator_changed(
         self,
         group_id: str,

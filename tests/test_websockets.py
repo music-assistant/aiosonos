@@ -181,6 +181,46 @@ async def test_session_error_routed_to_session_error_callback() -> None:
     assert "session1" not in api.playback_session._error_listeners
 
 
+async def test_session_error_before_the_subscribe_reply_reaches_the_callback() -> None:
+    """An eviction processed while the subscribe command is unanswered is not dropped."""
+    api = _api()
+    replied = asyncio.Event()
+
+    async def _handle_subscribe(*_: object) -> Mock:
+        await replied.wait()
+        return Mock()
+
+    api._playback_session._handle_subscribe = _handle_subscribe  # type: ignore[method-assign]
+    error_callback = Mock()
+    error = {"errorCode": "ERROR_SESSION_EVICTED", "reason": "Another user joined the session."}
+
+    pending = asyncio.ensure_future(
+        api.playback_session.subscribe("session1", Mock(), error_callback)
+    )
+    await asyncio.sleep(0)
+    api._handle_incoming_message(({"type": "sessionError", "sessionId": "session1"}, error))
+    await _drain()
+    error_callback.assert_called_once_with(error)
+    replied.set()
+    await pending
+
+
+async def test_a_refused_session_subscription_restores_the_previous_error_listener() -> None:
+    """A subscribe the player refuses leaves the listener that was there before it."""
+    api = _api()
+    api._playback_session._handle_subscribe = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
+    previous = Mock()
+    await api.playback_session.subscribe("session1", Mock(), previous)
+    api._playback_session._handle_subscribe = AsyncMock(  # type: ignore[method-assign]
+        side_effect=FailedCommand("ERROR_COMMAND_FAILED")
+    )
+
+    with pytest.raises(FailedCommand):
+        await api.playback_session.subscribe("session1", Mock(), Mock())
+
+    assert api.playback_session._error_listeners["session1"] is previous
+
+
 async def test_session_info_and_audio_clip_status_reach_their_listeners() -> None:
     """The sessionInfo and audioClipStatus events are routed by their event type."""
     api = _api()
