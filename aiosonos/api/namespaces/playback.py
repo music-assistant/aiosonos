@@ -278,19 +278,25 @@ class PlaybackNameSpace(SonosNameSpace):
         The optional error_callback receives playbackError events,
         sent when the group fails to play an item.
 
-        Returns handle to unsubscribe.
+        Returns handle to unsubscribe; a no-op once used, or once a newer
+        subscription to the group replaced this one.
 
         Reference:
         https://docs.sonos.com/reference/playback-subscribe-groupid
         """
+
+        # one listener object per call, so the subscription it belongs to is known
+        # even when the same callback (or none) is given twice
+        def _on_playback_error(error: PlaybackError) -> None:
+            if error_callback is not None:
+                error_callback(error)
+
         unsubscribe = await self._handle_subscribe(group_id, callback)
-        if error_callback is None:
-            self._error_listeners.pop(group_id, None)
-        else:
-            self._error_listeners[group_id] = error_callback
+        self._error_listeners[group_id] = _on_playback_error
 
         def _unsubscribe() -> None:
-            self._error_listeners.pop(group_id, None)
+            if self._error_listeners.get(group_id) is _on_playback_error:
+                del self._error_listeners[group_id]
             unsubscribe()
 
         return _unsubscribe

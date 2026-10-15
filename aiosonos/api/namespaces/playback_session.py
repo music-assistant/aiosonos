@@ -270,29 +270,36 @@ class PlaybackSessionNameSpace(SonosNameSpace):
         :param callback: Receives sessionInfo events (session suspended or resumed).
         :param error_callback: Receives sessionError events, e.g.
             ERROR_SESSION_EVICTED when another app or source took over the group.
-        :return: Handle to unsubscribe.
+        :return: Handle to unsubscribe; a no-op once used, or once a newer
+            subscription to the session replaced this one.
 
         Reference:
         https://docs.sonos.com/reference/playbacksession-subscribe-sessionid
         """
+
+        # one listener object per call, so the subscription it belongs to is known
+        # even when the same callback (or none) is given twice
+        def _on_session_error(error: SessionError) -> None:
+            if error_callback is not None:
+                error_callback(error)
+
         # listening from before the reply, so an error in the meantime is not lost
-        previous = self._error_listeners.pop(session_id, None)
-        if error_callback is not None:
-            self._error_listeners[session_id] = error_callback
+        previous = self._error_listeners.get(session_id)
+        self._error_listeners[session_id] = _on_session_error
         try:
             unsubscribe = await self._handle_subscribe(session_id, callback)
         except BaseException:
-            if self._error_listeners.get(session_id) is error_callback:
+            if self._error_listeners.get(session_id) is _on_session_error:
                 # nothing newer was registered since: put back what was there
                 if previous is None:
-                    self._error_listeners.pop(session_id, None)
+                    del self._error_listeners[session_id]
                 else:
                     self._error_listeners[session_id] = previous
             raise
 
         def _unsubscribe() -> None:
-            if self._error_listeners.get(session_id) is error_callback:
-                self._error_listeners.pop(session_id, None)
+            if self._error_listeners.get(session_id) is _on_session_error:
+                del self._error_listeners[session_id]
             unsubscribe()
 
         return _unsubscribe

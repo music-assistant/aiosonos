@@ -179,7 +179,12 @@ class SonosLocalApiClient:
         # an individual api connection should be set-up to manage the player.
         # The Cloud API however is able to manage all players in the household.
         player_data = next(x for x in groups_data["players"] if x["id"] == self._player_id)
-        self._player = player = SonosPlayer(self, player_data)
+        if (player := self._player) is None:
+            self._player = player = SonosPlayer(self, player_data)
+        else:
+            # the object callers hold, cleaned up by connect() for this connection:
+            # kept, so a clip subscribed to meanwhile is the player's own
+            player.update_data(player_data)
         await player.async_init()
         # setup global groups/player subscription
         await self.api.groups.subscribe(self._household_id, self._handle_groups_event)

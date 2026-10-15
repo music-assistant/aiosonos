@@ -270,3 +270,32 @@ async def test_start_listening_without_ready_event() -> None:
     await client.start_listening()
 
     assert client.player.id == "RINCON_ME"
+
+
+async def test_start_listening_keeps_the_player_across_connections() -> None:
+    """A new connection refreshes the player callers hold instead of replacing it."""
+    client = SonosLocalApiClient("1.2.3.4", MagicMock())
+    client._player_id = "RINCON_ME"
+    client._household_id = "Sonos_1"
+    client._loop = asyncio.get_running_loop()
+    client.signal_event = MagicMock()
+    api = MagicMock()
+    api.start_listening = AsyncMock()
+    api.groups.get_groups = AsyncMock(
+        side_effect=[
+            {"groups": [], "players": [{"id": "RINCON_ME", "name": "Me"}]},
+            {"groups": [], "players": [{"id": "RINCON_ME", "name": "Me, renamed"}]},
+        ]
+    )
+    api.groups.subscribe = AsyncMock()
+    api.player_volume.get_volume = AsyncMock(return_value={})
+    api.player_volume.subscribe = AsyncMock()
+    client.api = api
+    await client.start_listening()
+    player = client.player
+
+    await client.start_listening()
+
+    assert client.player is player
+    assert player.name == "Me, renamed"
+    assert api.player_volume.subscribe.await_count == 2

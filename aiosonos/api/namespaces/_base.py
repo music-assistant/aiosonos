@@ -29,6 +29,8 @@ class SonosNameSpace:
         """Handle Initialization."""
         self.api = api
         self._listeners: dict[str, SubscribeCallbackType] = {}
+        # the handle that owns each listener: the newest subscription to that id
+        self._unsubscribers: dict[str, UnsubscribeCallbackType] = {}
 
     async def _handle_event(self, event: dict[str, Any], event_data: dict[str, Any]) -> None:
         """Handle incoming event from subscription."""
@@ -52,11 +54,17 @@ class SonosNameSpace:
         self._listeners[event_id] = callback
 
         def _unsubscribe() -> None:
-            self._listeners.pop(event_id)
+            if self._unsubscribers.get(event_id) is not _unsubscribe:
+                # a newer subscription to the same id owns the listener now (or this
+                # handle was already used): leave it to that one
+                return
+            del self._unsubscribers[event_id]
+            del self._listeners[event_id]
             self.api.send_command_no_wait(
                 namespace=self.namespace,
                 command="unsubscribe",
                 **{self._event_key: event_id},
             )
 
+        self._unsubscribers[event_id] = _unsubscribe
         return _unsubscribe
