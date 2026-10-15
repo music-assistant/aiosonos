@@ -12,7 +12,7 @@ import pytest
 from aiosonos.api.models import GroupStatus
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType
-from aiosonos.exceptions import CommandTimeout, FailedCommand
+from aiosonos.exceptions import CommandTimeout, FailedCommand, InvalidState
 from aiosonos.group import SonosGroup
 from aiosonos.player import SonosPlayer
 
@@ -160,14 +160,16 @@ async def test_cleanup_during_a_pending_subscription_undoes_it() -> None:
         return unsubscribe
 
     client.api.playback_session.subscribe = _subscribe
-    await group.create_playback_session()
+    with pytest.raises(InvalidState):
+        await group.create_playback_session()
 
     unsubscribe.assert_called_once()
     assert group._unsubscribe_session is None
+    assert group.active_session_id is None
 
 
-async def test_cleanup_while_the_session_is_created_skips_the_subscription() -> None:
-    """A group cleaned up during createSession does not subscribe to the new session."""
+async def test_cleanup_while_the_session_is_created_hands_it_out_to_nobody() -> None:
+    """A group cleaned up during createSession neither subscribes to nor returns the session."""
     client = _client()
     group = _group(client)
 
@@ -176,7 +178,8 @@ async def test_cleanup_while_the_session_is_created_skips_the_subscription() -> 
         return {"sessionId": "session1"}
 
     client.api.playback_session.create_session.side_effect = _create
-    await group.create_playback_session()
+    with pytest.raises(InvalidState):
+        await group.create_playback_session()
 
     client.api.playback_session.subscribe.assert_not_awaited()
     assert group.active_session_id is None
@@ -468,8 +471,10 @@ async def test_an_eviction_while_subscribing_is_not_lost() -> None:
     client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
     group = _group(client)
 
-    await group.create_playback_session()
+    with pytest.raises(FailedCommand) as excinfo:
+        await group.create_playback_session()
 
+    assert excinfo.value.error_code == "ERROR_SESSION_EVICTED"
     assert group.active_session_id is None
     assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
     await group.create_playback_session()
@@ -527,7 +532,8 @@ async def test_an_error_after_cleanup_before_the_subscribe_reply_is_ignored() ->
         return unsubscribe
 
     client.api.playback_session.subscribe = _subscribe
-    await group.create_playback_session()
+    with pytest.raises(InvalidState):
+        await group.create_playback_session()
 
     client.signal_event.assert_not_called()
     unsubscribe.assert_called_once()
@@ -634,10 +640,76 @@ async def test_a_cleanup_before_a_waiting_creation_starts_does_not_count_against
     await asyncio.sleep(0.01)
     group.cleanup()  # the group moved away and back while the first one subscribed
     subscribed.set()
-    await asyncio.gather(first, second)
+    with pytest.raises(InvalidState):
+        await first
+    await second
 
     assert client.api.playback_session.subscribe.await_count == 2
     assert group._subscribed_session_id == "session2"
+
+
+async def test_a_stream_is_not_loaded_into_a_session_evicted_while_subscribing() -> None:
+    """play_stream_url sends no load when its session was evicted before the subscribe reply."""
+    client = _client()
+
+    async def _subscribe(_session_id: str, _callback: object, error_callback: object) -> Mock:
+        error_callback(EVICTED)  # type: ignore[operator]
+        return Mock()
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.playback_session.load_stream_url = AsyncMock()
+    group = _group(client)
+
+    with pytest.raises(FailedCommand):
+        await group.play_stream_url("http://host/a", cast("Container", {}))
+
+    client.api.playback_session.load_stream_url.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [FailedCommand("ERROR_UNSUPPORTED_COMMAND"), CommandTimeout("playbackSession:subscribe", 10)],
+    ids=["refused", "unanswered"],
+)
+async def test_a_stream_is_not_loaded_after_an_eviction_even_if_the_subscribe_fails(
+    refusal: FailedCommand,
+) -> None:
+    """An eviction during a subscribe that then fails still withholds the session."""
+    client = _client()
+
+    async def _subscribe(_session_id: str, _callback: object, error_callback: object) -> Mock:
+        error_callback(EVICTED)  # type: ignore[operator]
+        raise refusal
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.playback_session.load_stream_url = AsyncMock()
+    group = _group(client)
+
+    with pytest.raises(FailedCommand) as excinfo:
+        await group.play_stream_url("http://host/a", cast("Container", {}))
+
+    assert excinfo.value.error_code == "ERROR_SESSION_EVICTED"
+    client.api.playback_session.load_stream_url.assert_not_awaited()
+    assert group.active_session_id is None
+    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
+
+
+async def test_a_queue_is_not_loaded_into_a_session_of_a_cleaned_up_group() -> None:
+    """play_cloud_queue sends no load when its group was cleaned up before the subscribe reply."""
+    client = _client()
+    group = _group(client)
+
+    async def _subscribe(*_: object) -> Mock:
+        group.cleanup()
+        return Mock()
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    client.api.playback_session.load_cloud_queue = AsyncMock()
+
+    with pytest.raises(InvalidState):
+        await group.play_cloud_queue("http://host/queue/")
+
+    client.api.playback_session.load_cloud_queue.assert_not_awaited()
 
 
 async def test_a_stream_loads_into_the_session_made_for_it() -> None:

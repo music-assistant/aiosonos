@@ -424,8 +424,9 @@ class SonosGroup:
         over the group) clears active_session_id and is signalled as a
         SESSION_ERROR event. A refused subscription does not fail the session.
 
-        Raises FailedCommand (ERROR_SESSION_EVICTED) when the session the speaker
-        hands back was evicted while it was being created.
+        Raises FailedCommand (ERROR_SESSION_EVICTED) when the session was evicted,
+        and InvalidState when the group was cleaned up, before this returns: the
+        session is not handed out to play on in either case.
         """
         async with self._session_lock:
             generation = self._cleanup_generation
@@ -450,8 +451,8 @@ class SonosGroup:
                 msg = f"Session {session_id} was evicted while it was created"
                 raise FailedCommand(SESSION_EVICTED_ERROR, msg)
             if generation != self._cleanup_generation:
-                # cleaned up while the session was created: not this group's to play on
-                return session
+                msg = f"Group {self.id} was cleaned up while session {session_id} was created"
+                raise InvalidState(msg)
             self.active_session_id = session_id
             self._evicted_session_id = None
             if self._subscribed_session_id == session_id:
@@ -459,6 +460,7 @@ class SonosGroup:
                 return session
             # the listener of another session (replaced, or stopped earlier) makes way
             self._stop_session_listener()
+            unsubscribe: Callable[[], None] | None = None
             try:
                 unsubscribe = await self.client.api.playback_session.subscribe(
                     session_id,
@@ -468,14 +470,21 @@ class SonosGroup:
             except CommandTimeout as err:
                 # the speaker may hold the subscription without anyone listening to it
                 _LOGGER.warning("No reply subscribing to session %s: %s", session_id, err)
-                return session
             except FailedCommand as err:
                 _LOGGER.debug("Could not subscribe to session %s: %s", session_id, err)
-                return session
             if generation != self._cleanup_generation or session_id == self._evicted_session_id:
-                # the group was cleaned up, or the session evicted, in the meantime
-                with suppress(InvalidState):
-                    unsubscribe()
+                # the group was cleaned up, or the session evicted, in the meantime: the
+                # subscription (if made) is undone and the session not handed out
+                if unsubscribe is not None:
+                    with suppress(InvalidState):
+                        unsubscribe()
+                if session_id == self._evicted_session_id:
+                    msg = f"Session {session_id} was evicted while it was subscribed to"
+                    raise FailedCommand(SESSION_EVICTED_ERROR, msg)
+                msg = f"Group {self.id} was cleaned up while session {session_id} was subscribed to"
+                raise InvalidState(msg)
+            if unsubscribe is None:
+                # a refused subscription does not fail the session
                 return session
             self._subscribed_session_id = session_id
             self._unsubscribe_session = unsubscribe
