@@ -425,9 +425,16 @@ class SonosGroup:
             except BaseException:
                 self._end_session_replacement(replaced=False)
                 raise
-            self._end_session_replacement(replaced=True)
             session_id = session["sessionId"]
-            self.active_session_id = session_id
+            if session_id == self.active_session_id:
+                # the speaker handed back the session in use: nothing was replaced, so an
+                # error held back for it counts, and its subscription (if any) stays
+                self._end_session_replacement(replaced=False)
+                if self.active_session_id != session_id or self._unsubscribe_session is not None:
+                    return session
+            else:
+                self._end_session_replacement(replaced=True)
+                self.active_session_id = session_id
             if generation != self._cleanup_generation:
                 # cleaned up while the session was created: nothing to listen for
                 return session

@@ -341,8 +341,8 @@ async def test_refused_concurrent_replacement_keeps_the_first_session_monitored(
     assert group.active_session_id is None
 
 
-async def test_the_same_session_handed_back_twice_is_listened_to_once() -> None:
-    """Two creations answered with one session id leave one listener, undone cleanly."""
+async def test_the_same_session_handed_back_again_keeps_its_subscription() -> None:
+    """A creation answered with the session in use subscribes and unsubscribes nothing."""
     client = _client()
     listeners: dict[str, object] = {}
 
@@ -358,9 +358,49 @@ async def test_the_same_session_handed_back_twice_is_listened_to_once() -> None:
 
     await asyncio.gather(group.create_playback_session(), group.create_playback_session())
 
+    client.api.playback_session.subscribe.assert_awaited_once()
     assert list(listeners) == ["session1"]
+    assert group.active_session_id == "session1"
     group.cleanup()
     assert listeners == {}
+
+
+async def test_an_eviction_before_the_same_session_is_handed_back_counts() -> None:
+    """Evicted while asking for a session, and given the same one back: it is gone, not revived."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+
+    def _create(*_: object) -> dict[str, str]:
+        first_error_callback(EVICTED)
+        return {"sessionId": "session1"}
+
+    client.api.playback_session.create_session.side_effect = _create
+    await group.create_playback_session()
+
+    assert group.active_session_id is None
+    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
+    client.api.playback_session.subscribe.assert_awaited_once()
+
+
+async def test_the_same_session_handed_back_unmonitored_is_subscribed_to() -> None:
+    """A session whose subscription was refused is subscribed to when handed back again."""
+    client = _client()
+    unsubscribe = Mock()
+    client.api.playback_session.subscribe = AsyncMock(
+        side_effect=[FailedCommand("ERROR_UNSUPPORTED_COMMAND"), unsubscribe],
+    )
+    client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "session1"})
+    group = _group(client)
+    await group.create_playback_session()
+    assert group._unsubscribe_session is None
+
+    await group.create_playback_session()
+
+    assert client.api.playback_session.subscribe.await_count == 2
+    assert group._unsubscribe_session is unsubscribe
+    assert group.active_session_id == "session1"
 
 
 async def test_a_stream_loads_into_the_session_made_for_it() -> None:
