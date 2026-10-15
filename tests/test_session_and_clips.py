@@ -333,6 +333,43 @@ async def test_refused_concurrent_replacement_keeps_the_first_session_monitored(
     assert group.active_session_id is None
 
 
+async def test_overlapping_replacements_do_not_report_a_takeover() -> None:
+    """Two replacements asked for together: the first failing does not expose the second's."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+    first_create, second_create = asyncio.Event(), asyncio.Event()
+    second_create_started = asyncio.Event()
+    creations = 0
+
+    async def _create(*_: object) -> dict[str, str]:
+        nonlocal creations
+        creations += 1
+        if creations == 1:
+            await first_create.wait()
+            raise FailedCommand("ERROR_SESSION_IN_PROGRESS")
+        second_create_started.set()
+        await second_create.wait()
+        return {"sessionId": "session2"}
+
+    client.api.playback_session.create_session = AsyncMock(side_effect=_create)
+    first = asyncio.ensure_future(group.create_playback_session())
+    second = asyncio.ensure_future(group.create_playback_session())
+    await asyncio.sleep(0)
+    first_create.set()
+    with pytest.raises(FailedCommand):
+        await first
+    # the speaker evicts session1 for session2 while that creation is still unanswered
+    await second_create_started.wait()
+    first_error_callback(EVICTED)
+    second_create.set()
+    await second
+
+    assert group.active_session_id == "session2"
+    client.signal_event.assert_not_called()
+
+
 async def test_a_clip_played_meanwhile_waits_for_the_subscription() -> None:
     """No clip is loaded before the audioClip subscription is in place."""
     client = _client()

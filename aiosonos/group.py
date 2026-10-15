@@ -13,6 +13,7 @@ Reference: https://docs.sonos.com/docs/control
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import suppress
@@ -88,9 +89,11 @@ class SonosGroup:
         # advanced by cleanup, so a session subscription that completes after it
         # is undone instead of installed
         self._cleanup_generation = 0
-        # the session a replacement is under way for, and an error held back for it
+        # the session a replacement is under way for, and an error held back for it;
+        # one replacement at a time, so they never settle each other's
         self._replacing_session_id: str | None = None
         self._deferred_session_error: tuple[str, SessionError] | None = None
+        self._session_replacement_lock = asyncio.Lock()
 
     def cleanup(self) -> None:
         """Handle cleanup on deletion."""
@@ -406,23 +409,24 @@ class SonosGroup:
         SESSION_ERROR event. A refused subscription does not fail the session.
         """
         generation = self._cleanup_generation
-        # the new session replaces (evicts) the previous one: an error for that one
-        # is held back until the replacement succeeded (dropped) or failed (handled)
-        self._replacing_session_id = self.active_session_id
-        try:
-            session = await self.client.api.playback_session.create_session(
-                self.id,
-                app_id,
-                app_context,
-                account_id,
-                custom_data,
-            )
-        except BaseException:
-            self._end_session_replacement(replaced=False)
-            raise
-        self._end_session_replacement(replaced=True)
-        session_id = session["sessionId"]
-        self.active_session_id = session_id
+        async with self._session_replacement_lock:
+            # the new session replaces (evicts) the previous one: an error for that one
+            # is held back until the replacement succeeded (dropped) or failed (handled)
+            self._replacing_session_id = self.active_session_id
+            try:
+                session = await self.client.api.playback_session.create_session(
+                    self.id,
+                    app_id,
+                    app_context,
+                    account_id,
+                    custom_data,
+                )
+            except BaseException:
+                self._end_session_replacement(replaced=False)
+                raise
+            self._end_session_replacement(replaced=True)
+            session_id = session["sessionId"]
+            self.active_session_id = session_id
         if generation != self._cleanup_generation:
             # cleaned up while the session was created: nothing to listen for
             return session
