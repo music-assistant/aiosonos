@@ -266,11 +266,11 @@ class PlaybackSessionNameSpace(SonosNameSpace):
         """
         Subscribe to events in the playbackSession namespace for a specific sessionId.
 
-        The callback receives sessionInfo events (session suspended or resumed);
-        the optional error_callback receives sessionError events, e.g.
-        ERROR_SESSION_EVICTED when another app or source took over the group.
-
-        Returns handle to unsubscribe.
+        :param session_id: The session to follow.
+        :param callback: Receives sessionInfo events (session suspended or resumed).
+        :param error_callback: Receives sessionError events, e.g.
+            ERROR_SESSION_EVICTED when another app or source took over the group.
+        :return: Handle to unsubscribe.
 
         Reference:
         https://docs.sonos.com/reference/playbacksession-subscribe-sessionid

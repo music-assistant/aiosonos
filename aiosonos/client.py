@@ -140,8 +140,10 @@ class SonosLocalApiClient:
             discovery_info["websocketUrl"],
             self._aiohttp_session,
         )
-        # the groups' and player's subscriptions were made on the connection this one
-        # replaces and went with it: undone here, start_listening makes them again
+        # the groups' and player's subscriptions, and any group setup still being
+        # retried, belong to the connection this one replaces and went with it: undone
+        # here, start_listening makes them again
+        self._cancel_group_setups()
         for group in self._groups.values():
             group.cleanup()
         if self._player is not None:
@@ -152,10 +154,14 @@ class SonosLocalApiClient:
 
     async def disconnect(self) -> None:
         """Disconnect the client and cleanup."""
+        self._cancel_group_setups()
+        await self.api.disconnect()
+
+    def _cancel_group_setups(self) -> None:
+        """Cancel every group setup (or retry of one) still under way."""
         for task in self._group_setups.values():
             task.cancel()
         self._group_setups.clear()
-        await self.api.disconnect()
 
     async def start_listening(self, init_ready: asyncio.Event | None = None) -> None:
         """Fetch initial state keep listening to messages until stopped."""
@@ -288,10 +294,14 @@ class SonosLocalApiClient:
         group_id: str,
         data: GroupCoordinatorChanged,
     ) -> None:
-        """Forward a groupCoordinatorChanged event to subscribers.
+        """
+        Forward a groupCoordinatorChanged event to subscribers.
 
         Signalled whether or not the group is still known here: on a move, the
         player sends it before the groups event that replaces the old group.
+
+        :param group_id: The group the event is about, from the event header.
+        :param data: The event body.
         """
         self.signal_event(
             GroupCoordinatorChangedEvent(

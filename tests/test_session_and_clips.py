@@ -243,6 +243,53 @@ async def test_a_new_connection_subscribes_to_audio_clips_again(
     new_api.audio_clip.subscribe.assert_awaited_once_with(PLAYER, player._handle_audio_clip_status)
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [None, FailedCommand("ERROR_UNSUPPORTED_COMMAND"), CommandTimeout("audioClip:subscribe", 10)],
+    ids=["subscribed", "refused", "unanswered"],
+)
+async def test_a_connection_replaced_while_subscribing_to_clips_is_subscribed_to(
+    outcome: FailedCommand | None,
+) -> None:
+    """A clip whose subscribe ends on a replaced connection subscribes on the new one first."""
+    client = _client()
+    subscribed = asyncio.Event()
+    order: list[str] = []
+
+    async def _old_subscribe(*_: object) -> None:
+        await subscribed.wait()
+        if outcome is not None:
+            raise outcome
+
+    async def _new_subscribe(*_: object) -> None:
+        order.append("subscribe new")
+
+    async def _new_load(*_: object, **__: object) -> dict[str, str]:
+        order.append("load new")
+        return _clip("ACTIVE")
+
+    old_api = client.api
+    old_api.audio_clip.subscribe = AsyncMock(side_effect=_old_subscribe)
+    old_api.audio_clip.load_audio_clip = AsyncMock(return_value=_clip("ACTIVE"))
+    new_api = MagicMock()
+    new_api.audio_clip.subscribe = AsyncMock(side_effect=_new_subscribe)
+    new_api.audio_clip.load_audio_clip = AsyncMock(side_effect=_new_load)
+    player = _player(client)
+
+    clip = asyncio.ensure_future(player.play_audio_clip("http://host/a.mp3"))
+    await asyncio.sleep(0.01)
+    client.api = new_api  # as connect() does, with the player's cleanup
+    player.cleanup()
+    subscribed.set()
+    await clip
+
+    assert order == ["subscribe new", "load new"]
+    new_api.audio_clip.subscribe.assert_awaited_once_with(PLAYER, player._handle_audio_clip_status)
+    old_api.audio_clip.load_audio_clip.assert_not_awaited()
+    await player.play_audio_clip("http://host/b.mp3")
+    new_api.audio_clip.subscribe.assert_awaited_once()
+
+
 async def test_play_audio_clip_returns_the_clip_and_subscribes_once() -> None:
     """The loaded clip is returned; audioClip is subscribed to before the first clip only."""
     client = _client()
@@ -1037,3 +1084,71 @@ async def test_a_stop_whose_clear_session_is_cleaned_up_loads_nothing() -> None:
 
     client.api.playback_session.load_stream_url.assert_not_awaited()
     assert group.active_session_id is None
+
+
+async def test_an_evicted_session_handed_back_again_is_a_live_one() -> None:
+    """A session evicted earlier that createSession hands back is used like any other."""
+    client = _client()
+    client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "session1"})
+    group = _group(client)
+    await group.create_playback_session()
+    _session_error_callback(client)(EVICTED)
+    assert group.active_session_id is None
+
+    session = await group.create_playback_session()
+
+    assert session == {"sessionId": "session1"}
+    assert group.active_session_id == "session1"
+
+
+async def test_a_held_back_error_that_is_no_eviction_does_not_withhold_the_session() -> None:
+    """A non-eviction error held back for a session handed back again is replayed only."""
+    client = _client()
+    client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "session1"})
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+    client.signal_event.reset_mock()
+    other_error = {"errorCode": "ERROR_PLAYBACK_FAILED", "reason": "something"}
+
+    def _create(*_: object) -> dict[str, str]:
+        first_error_callback(other_error)
+        return {"sessionId": "session1"}
+
+    client.api.playback_session.create_session.side_effect = _create
+    session = await group.create_playback_session()
+
+    assert session == {"sessionId": "session1"}
+    assert group.active_session_id == "session1"
+    assert client.signal_event.call_args.args[0].data["errorCode"] == "ERROR_PLAYBACK_FAILED"
+
+
+async def test_cleanup_tolerates_a_session_unsubscribe_on_a_closed_connection() -> None:
+    """Dropping the session listener after the connection closed does not raise."""
+    client = _client()
+    client.api.playback_session.subscribe = AsyncMock(
+        return_value=Mock(side_effect=InvalidState("Not connected"))
+    )
+    group = _group(client)
+    await group.create_playback_session()
+
+    group.cleanup()
+
+    assert group._unsubscribe_session is None
+
+
+async def test_an_eviction_while_subscribing_on_a_closed_connection_still_counts() -> None:
+    """Undoing the subscription on a closed connection does not hide the eviction."""
+    client = _client()
+
+    async def _subscribe(_session_id: str, _callback: object, error_callback: object) -> Mock:
+        error_callback(EVICTED)  # type: ignore[operator]
+        return Mock(side_effect=InvalidState("Not connected"))
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    group = _group(client)
+
+    with pytest.raises(FailedCommand) as excinfo:
+        await group.create_playback_session()
+
+    assert excinfo.value.error_code == "ERROR_SESSION_EVICTED"

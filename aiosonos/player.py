@@ -180,19 +180,25 @@ class SonosPlayer:
         await self.client.api.home_theater.load_home_theater_playback(self.id)
 
     async def _subscribe_audio_clips(self) -> None:
-        """Subscribe to this player's audio clip status, once."""
+        """Subscribe to this player's audio clip status, once per connection."""
         # clips played at the same time wait for the one subscription, so none is
         # loaded before its status is followed
         async with self._audio_clips_lock:
-            if self._audio_clips_subscribed:
-                return
-            try:
-                await self.client.api.audio_clip.subscribe(self.id, self._handle_audio_clip_status)
-            except FailedCommand as err:
-                # the clip can still be played, only its status is not followed
-                _LOGGER.debug("Could not subscribe to audio clips of %s: %s", self.id, err)
-                return
-            self._audio_clips_subscribed = True
+            while not self._audio_clips_subscribed:
+                # a subscription counts for the connection it was made on: one replaced
+                # meanwhile (cleanup() reset the flag) is subscribed to in its turn
+                api = self.client.api
+                try:
+                    await api.audio_clip.subscribe(self.id, self._handle_audio_clip_status)
+                except FailedCommand as err:
+                    if self.client.api is not api:
+                        # refused or unanswered on a connection replaced meanwhile
+                        continue
+                    # the clip can still be played, only its status is not followed
+                    _LOGGER.debug("Could not subscribe to audio clips of %s: %s", self.id, err)
+                    return
+                if self.client.api is api:
+                    self._audio_clips_subscribed = True
 
     def _handle_audio_clip_status(self, data: AudioClipStatusEvent) -> None:
         """Handle audioClipStatus event (it lists every clip the player tracks)."""

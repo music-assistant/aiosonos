@@ -268,3 +268,64 @@ async def test_group_removed_while_retry_pending_cancels_it(
     group.cleanup.assert_called_once()
     assert "group1" not in client._groups
     assert client.signal_event.call_args.args[0].event_type == EventType.GROUP_REMOVED
+
+
+async def test_a_new_connection_cancels_a_pending_setup_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """connect() drops a setup retry queued on the connection it replaces."""
+    client = _client()
+    group = _group(client, PLAYER)
+    client._groups = {"group1": group}
+    pending = client._loop.create_task(asyncio.sleep(60))
+    client._group_setups["group1"] = pending
+    discovery = {"playerId": PLAYER, "householdId": "household1", "websocketUrl": "wss://host"}
+    monkeypatch.setattr(client_module, "get_discovery_info", AsyncMock(return_value=discovery))
+    new_api = MagicMock()
+    new_api.connect = AsyncMock()
+    monkeypatch.setattr(client_module, "SonosLocalWebSocketsApi", MagicMock(return_value=new_api))
+
+    await client.connect()
+    await asyncio.sleep(0)
+
+    assert pending.cancelled()
+    assert client._group_setups == {}
+
+
+async def test_a_group_turning_remote_during_its_setup_is_cleaned_up() -> None:
+    """A coordinator change during the setup ends it quietly, dropping the session too."""
+    client = _client()
+    client.api = _api()
+    client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "s1"})
+    client.api.playback_session.subscribe = AsyncMock(return_value=Mock())
+    group = _group(client, PLAYER)
+    await group.create_playback_session()
+
+    async def _get_volume(*_: object) -> dict[str, int]:
+        group._data["coordinatorId"] = OTHER
+        raise FailedCommand("groupCoordinatorChanged")
+
+    client.api.group_volume.get_volume = AsyncMock(side_effect=_get_volume)
+
+    await group.async_init()
+
+    assert not group.is_subscribed
+    assert group.active_session_id is None
+    assert group._subscribed_session_id is None
+
+
+async def test_a_remote_group_drops_its_session_too() -> None:
+    """Setting up a group this player no longer coordinates ends its session subscription."""
+    client = _client()
+    client.api = _api()
+    client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "s1"})
+    unsubscribe = Mock()
+    client.api.playback_session.subscribe = AsyncMock(return_value=unsubscribe)
+    group = _group(client, PLAYER)
+    await group.create_playback_session()
+    group._data["coordinatorId"] = OTHER
+
+    await group.async_init()
+
+    unsubscribe.assert_called_once()
+    assert group.active_session_id is None

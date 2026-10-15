@@ -240,3 +240,53 @@ async def test_session_info_and_audio_clip_status_reach_their_listeners() -> Non
 
     session_listener.assert_called_once_with({"suspended": True})
     clip_listener.assert_called_once_with(clips)
+
+
+async def test_a_refused_first_session_subscription_leaves_no_error_listener() -> None:
+    """A subscribe the player refuses, with nothing before it, registers no listener."""
+    api = _api()
+    api._playback_session._handle_subscribe = AsyncMock(  # type: ignore[method-assign]
+        side_effect=FailedCommand("ERROR_COMMAND_FAILED")
+    )
+
+    with pytest.raises(FailedCommand):
+        await api.playback_session.subscribe("session1", Mock(), Mock())
+
+    assert "session1" not in api.playback_session._error_listeners
+
+
+async def test_a_session_subscription_failing_late_keeps_a_newer_listener() -> None:
+    """A subscribe that fails after a newer one registered neither restores nor removes it."""
+    api = _api()
+    first_reply = asyncio.Event()
+
+    async def _first(*_: object) -> Mock:
+        await first_reply.wait()
+        raise FailedCommand("ERROR_COMMAND_FAILED")
+
+    api._playback_session._handle_subscribe = _first  # type: ignore[method-assign]
+    first = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock(), Mock()))
+    await asyncio.sleep(0)
+    api._playback_session._handle_subscribe = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
+    newer = Mock()
+    unsubscribe_newer = await api.playback_session.subscribe("session1", Mock(), newer)
+    first_reply.set()
+    with pytest.raises(FailedCommand):
+        await first
+
+    assert api.playback_session._error_listeners["session1"] is newer
+    unsubscribe_newer()
+    assert "session1" not in api.playback_session._error_listeners
+
+
+async def test_unsubscribing_a_session_leaves_a_newer_listener_alone() -> None:
+    """The unsubscribe handle of an older subscription does not drop a newer one's listener."""
+    api = _api()
+    api._playback_session._handle_subscribe = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
+    unsubscribe_older = await api.playback_session.subscribe("session1", Mock(), Mock())
+    newer = Mock()
+    await api.playback_session.subscribe("session1", Mock(), newer)
+
+    unsubscribe_older()
+
+    assert api.playback_session._error_listeners["session1"] is newer

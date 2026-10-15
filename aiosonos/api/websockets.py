@@ -89,10 +89,11 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         Listen for groupCoordinatorChanged events (global namespace).
 
         The player sends these to the subscribers of a group's namespaces, without
-        a subscribe command of their own. The callback receives the group id from
-        the event header and the event body.
+        a subscribe command of their own.
 
-        Returns handle to stop listening.
+        :param callback: Called with the group id from the event header and the
+            event body.
+        :return: Handle to stop listening.
         """
         self._group_coordinator_listeners.append(callback)
 
