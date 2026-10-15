@@ -140,6 +140,10 @@ class SonosLocalApiClient:
             discovery_info["websocketUrl"],
             self._aiohttp_session,
         )
+        # the groups' subscriptions were made on the connection this one replaces and
+        # went with it: undone here, start_listening makes them again
+        for group in self._groups.values():
+            group.cleanup()
         self.api.subscribe_group_coordinator_changed(self._handle_group_coordinator_changed)
         # NOTE: connect will raise when connecting failed
         await self.api.connect()

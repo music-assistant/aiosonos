@@ -48,18 +48,6 @@ def _group(client: SonosLocalApiClient, coordinator: str) -> SonosGroup:
     return SonosGroup(client, {"id": "group1", "coordinatorId": coordinator, "playerIds": [PLAYER]})
 
 
-async def test_remote_group_is_left_unsubscribed_quietly() -> None:
-    """A group this player does not coordinate cannot be subscribed to; that is not an error."""
-    client = _client()
-    client.api = _api(fail_subscribe=1, error=FailedCommand("groupCoordinatorChanged"))
-    group = _group(client, OTHER)
-
-    await group.async_init()
-
-    assert not group.is_subscribed
-    assert not group.coordinated_by_client
-
-
 async def test_remote_group_sends_no_command() -> None:
     """A group this player does not coordinate is not probed: the player would refuse it."""
     client = _client()
@@ -68,6 +56,7 @@ async def test_remote_group_sends_no_command() -> None:
 
     await group.async_init()
 
+    assert not group.coordinated_by_client
     client.api.group_volume.get_volume.assert_not_awaited()
     client.api.playback.get_playback_status.assert_not_awaited()
     client.api.playback.subscribe.assert_not_awaited()
