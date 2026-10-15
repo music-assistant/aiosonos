@@ -166,11 +166,14 @@ class SonosPlayer:
     def check_active_group(self) -> None:
         """Check/set the active group of this player."""
         prev_group_id = self._active_group.id if self._active_group else None
-        for group in self.client.groups:
-            if group.coordinator_id == self.id or self.id in group.player_ids:
-                self._active_group = group
-                break
-        if prev_group_id == self.group.id:
+        groups = self.client.groups
+        # a group that lists this player as a member wins over one it only coordinated:
+        # a cached group can still name it as coordinator after the player moved on
+        self._active_group = next(
+            (group for group in groups if self.id in group.player_ids),
+            None,
+        ) or next((group for group in groups if group.coordinator_id == self.id), None)
+        if prev_group_id == (self._active_group.id if self._active_group else None):
             return
         self.client.signal_event(
             PlayerEvent(

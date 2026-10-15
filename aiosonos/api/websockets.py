@@ -30,6 +30,7 @@ from aiosonos.api.models import CommandMessage, ResultMessage
 from aiosonos.const import LOCAL_API_TOKEN, LOG_LEVEL_VERBOSE
 from aiosonos.exceptions import (
     CannotConnect,
+    CommandTimeout,
     ConnectionClosed,
     ConnectionFailed,
     FailedCommand,
@@ -45,6 +46,8 @@ if TYPE_CHECKING:
     from aiohttp import ClientSession
 
 API_VERSION = 1
+# seconds to wait for a player's reply; a group command may never get one
+COMMAND_TIMEOUT = 10
 
 
 class SonosLocalWebSocketsApi(AbstractSonosApi):
@@ -74,7 +77,10 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         options: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Send a command and get a response."""
+        """Send a command and get a response.
+
+        Raises CommandTimeout when the player does not reply within COMMAND_TIMEOUT seconds.
+        """
         if not self.connected or not self._loop:
             raise InvalidState("Not connected")
 
@@ -90,7 +96,11 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         # body params are passed as options
         await self._send_message([command_message, options or {}])
         try:
-            return await future
+            async with asyncio.timeout(COMMAND_TIMEOUT):
+                return await future
+        except TimeoutError:
+            full_command = f"{namespace}:{command}"
+            raise CommandTimeout(full_command, COMMAND_TIMEOUT) from None
         finally:
             self._result_futures.pop(command_message["cmdId"])
 
@@ -188,7 +198,7 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         # handle error message
         if "errorCode" in msg_data:
             if "cmdId" in msg:
-                if future := self._result_futures.get(msg["cmdId"]):
+                if (future := self._pending_future(msg["cmdId"])) is not None:
                     future.set_exception(
                         FailedCommand(msg_data["errorCode"], msg_data.get("reason")),
                     )
@@ -201,7 +211,7 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
 
         # handle command result message
         if "success" in msg:
-            if future := self._result_futures.get(msg["cmdId"]):
+            if (future := self._pending_future(msg["cmdId"])) is not None:
                 if msg["success"]:
                     future.set_result(msg_data)
                 else:
@@ -233,6 +243,15 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
 
         # Log anything we can't handle here
         self.logger.debug("Received unhandled message: %s", msg)
+
+    def _pending_future(self, cmd_id: str) -> asyncio.Future[Any] | None:
+        """Return the future still waiting for the reply to a command (if any)."""
+        future = self._result_futures.get(cmd_id)
+        if future is None or future.done():
+            # a command that timed out is cancelled before its slot is released,
+            # so a reply arriving in between finds a future that is already done
+            return None
+        return future
 
     async def receive_message_or_raise(self) -> tuple[ResultMessage, dict[str, Any]]:
         """Receive (raw) message or raise."""

@@ -61,3 +61,13 @@ class FailedCommand(SonosException):
         super().__init__(f"Command failed: {details or error_code}")
         self.error_code = error_code
         self.details = details
+
+
+class CommandTimeout(FailedCommand):
+    """When a command got no reply from the player in time."""
+
+    def __init__(self, command: str, timeout: float) -> None:
+        """Initialize a command timeout error."""
+        super().__init__("ERROR_TIMEOUT", f"{command}: no reply within {timeout:g}s")
+        self.command = command
+        self.timeout = timeout

@@ -23,7 +23,7 @@ from aiosonos.api.models import GroupVolume as GroupVolumeData
 from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
 from aiosonos.api.models import PlayModes as PlayModesData
 from aiosonos.const import EventType, GroupEvent, PlaybackErrorEvent
-from aiosonos.exceptions import FailedCommand, InvalidState
+from aiosonos.exceptions import CommandTimeout, FailedCommand, InvalidState
 
 from .api.models import PlaybackActions as PlaybackActionsData
 
@@ -262,12 +262,20 @@ class SonosGroup:
         try:
             # always first attempt to suspend the active session
             await self.client.api.playback_session.suspend(self.active_session_id)
+        except CommandTimeout:
+            # the player may have suspended already; do not clear its queue
+            raise
         except FailedCommand:
             # this turns out the best way to clear the queue,
             # just send an invalid uri and it will clear the queue
             # and stop any playing content, including linein sources
-            with suppress(FailedCommand):
+            try:
                 await self.play_stream_url("clear", None)
+            except CommandTimeout:
+                # unanswered as well: the caller must not take the stop for done
+                raise
+            except FailedCommand:
+                pass
         finally:
             self.active_session_id = None
 

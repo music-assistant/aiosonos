@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
 from aiosonos.const import EventType, GroupEvent, SonosEvent
 from aiosonos.utils import get_discovery_info
@@ -233,7 +233,14 @@ class SonosLocalApiClient:
             self._groups[group_data["id"]] = SonosGroup(self, group_data)
             self._schedule_group_setup(group_data)
         # check if any groups are removed
-        removed_groups = set(self._groups.keys()) - {g["id"] for g in groups_data["groups"]}
+        if groups_data.get("partial"):
+            # the player's view of the household is incomplete (a player is still being
+            # discovered): a group missing from this event has not necessarily gone
+            _LOGGER.debug("Partial groups event, not removing any group")
+            removed_groups: set[str] = set()
+            self._drop_reported_players_from_omitted_groups(groups_data["groups"])
+        else:
+            removed_groups = set(self._groups.keys()) - {g["id"] for g in groups_data["groups"]}
         for group_id in removed_groups:
             group = self._groups.pop(group_id)
             if (task := self._group_setups.pop(group_id, None)) is not None:
@@ -253,6 +260,20 @@ class SonosLocalApiClient:
             if player_data["id"] != self._player_id:
                 continue
             self._player.update_data(player_data)
+
+    def _drop_reported_players_from_omitted_groups(self, reported: list[GroupData]) -> None:
+        """Drop the players a partial event places in a group from the groups it left out."""
+        # a group the event left out keeps its cached membership, which may predate a
+        # move: the membership the event reports takes precedence
+        reported_ids = {group_data["id"] for group_data in reported}
+        reported_players = {
+            player_id for group_data in reported for player_id in group_data["playerIds"]
+        }
+        for group in self._groups.values():
+            if group.id in reported_ids or reported_players.isdisjoint(group.player_ids):
+                continue
+            remaining = [x for x in group.player_ids if x not in reported_players]
+            group.update_data(cast("GroupData", {"id": group.id, "playerIds": remaining}))
 
     def _schedule_group_setup(self, group_data: GroupData) -> None:
         """Set up a group in the background, unless a setup for it is under way."""
