@@ -171,7 +171,8 @@ class SonosLocalApiClient:
         # setup global groups/player subscription
         await self.api.groups.subscribe(self._household_id, self._handle_groups_event)
         # set event that initial setup is done
-        init_ready.set()
+        if init_ready is not None:
+            init_ready.set()
         # wait (forever) for incoming messages
         await listen_task
 
@@ -194,7 +195,7 @@ class SonosLocalApiClient:
         that you want to use. If empty or not provided,
         the new group will not contain any audio.
         """
-        await self.api.groups.create_group(
+        return await self.api.groups.create_group(
             self._household_id,
             player_ids,
             music_context_group_id,
