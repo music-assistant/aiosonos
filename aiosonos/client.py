@@ -172,6 +172,10 @@ class SonosLocalApiClient:
             include_device_info=True,
         )
         for group_data in groups_data["groups"]:
+            if (group := self._groups.get(group_data["id"])) is not None:
+                # kept from an earlier connection: its coordinator may have changed
+                # while this player was disconnected, and async_init goes by it
+                group.update_data(group_data)
             await self._setup_group(group_data)
         # Although all players are returned in the groups data,
         # the local api can only process the player that it is connected to

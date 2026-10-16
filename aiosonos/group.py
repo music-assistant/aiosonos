@@ -105,12 +105,12 @@ class SonosGroup:
         # advanced by cleanup, so a session subscription that completes after it
         # is undone instead of installed
         self._cleanup_generation = 0
-        # the session a replacement is under way for, and an error held back for it;
-        # one creation at a time, through to its subscription and the load that follows,
-        # so two never settle each other's replacement, subscribe to one session twice
-        # or load into a session that is still being subscribed to
+        # the session a replacement is under way for, and the errors held back for it (in
+        # order of arrival); one creation at a time, through to its subscription and the
+        # load that follows, so two never settle each other's replacement, subscribe to one
+        # session twice or load into a session that is still being subscribed to
         self._replacing_session_id: str | None = None
-        self._deferred_session_error: tuple[int, str, SessionError] | None = None
+        self._deferred_session_errors: list[tuple[int, str, SessionError]] = []
         self._session_lock = asyncio.Lock()
 
     def cleanup(self) -> None:
@@ -681,19 +681,25 @@ class SonosGroup:
 
     def _end_session_replacement(self, *, replaced: bool) -> bool:
         """
-        Settle the error held back for the session a creation was under way for.
+        Settle the errors held back for the session a creation was under way for.
 
         :param replaced: Whether another session took its place, which makes its eviction
             this group's own doing.
         :return: Whether the session was evicted, so it must not be put to use again.
         """
-        deferred, self._deferred_session_error = self._deferred_session_error, None
+        deferred, self._deferred_session_errors = self._deferred_session_errors, []
         self._replacing_session_id = None
-        if deferred is None or replaced or deferred[0] != self._cleanup_generation:
-            # replaced: an eviction was this group's own doing; cleaned up since: moot
+        if replaced:
+            # an eviction was this group's own doing
             return False
-        self._handle_session_error(*deferred)
-        return deferred[2].get("errorCode") == SESSION_EVICTED_ERROR
+        evicted = False
+        for generation, session_id, data in deferred:
+            if generation != self._cleanup_generation:
+                continue  # cleaned up since: moot
+            # replayed in the order they arrived, so none displaces another
+            self._handle_session_error(generation, session_id, data)
+            evicted = evicted or data.get("errorCode") == SESSION_EVICTED_ERROR
+        return evicted
 
     def _stop_session_listener(self) -> None:
         """Stop listening to the session subscribed to (if any)."""
@@ -720,8 +726,9 @@ class SonosGroup:
             # subscribed before the group was cleaned up: no longer its concern
             return
         if session_id == self._replacing_session_id:
-            # what it means depends on the outcome of the creation under way
-            self._deferred_session_error = (generation, session_id, data)
+            # what it means depends on the outcome of the creation under way; held back
+            # with the others for that session, an eviction among them is kept
+            self._deferred_session_errors.append((generation, session_id, data))
             return
         evicted = data.get("errorCode") == SESSION_EVICTED_ERROR
         if evicted:

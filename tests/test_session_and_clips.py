@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 PLAYER = "RINCON_F0F6C1CC8D0401400"
 EVICTED = {"errorCode": "ERROR_SESSION_EVICTED", "reason": "Another user joined the session."}
+PLAYBACK_FAILED = {"errorCode": "ERROR_PLAYBACK_FAILED", "reason": "something"}
 
 
 def _client() -> SonosLocalApiClient:
@@ -1169,7 +1170,7 @@ async def test_a_cleanup_after_a_deferred_eviction_is_moot() -> None:
 
     client.signal_event.assert_not_called()
     assert group.active_session_id is None
-    assert group._deferred_session_error is None
+    assert group._deferred_session_errors == []
 
 
 async def test_a_creation_cancelled_while_unanswered_settles_the_replacement() -> None:
@@ -1194,7 +1195,7 @@ async def test_a_creation_cancelled_while_unanswered_settles_the_replacement() -
         await creation
 
     assert group._replacing_session_id is None
-    assert group._deferred_session_error is None
+    assert group._deferred_session_errors == []
     assert group.active_session_id is None
     assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
 
@@ -1253,6 +1254,66 @@ async def test_a_held_back_error_that_is_no_eviction_does_not_withhold_the_sessi
     assert session == {"sessionId": "session1"}
     assert group.active_session_id == "session1"
     assert client.signal_event.call_args.args[0].data["errorCode"] == "ERROR_PLAYBACK_FAILED"
+
+
+@pytest.mark.parametrize(
+    ("errors", "signalled"),
+    [
+        ((EVICTED, PLAYBACK_FAILED), ["ERROR_SESSION_EVICTED"]),
+        ((PLAYBACK_FAILED, EVICTED), ["ERROR_PLAYBACK_FAILED", "ERROR_SESSION_EVICTED"]),
+    ],
+    ids=["eviction-first", "eviction-last"],
+)
+async def test_an_eviction_among_the_errors_held_back_withholds_the_session_handed_back(
+    errors: tuple[dict[str, str], ...],
+    signalled: list[str],
+) -> None:
+    """Every error held back during createSession is replayed in order; an eviction counts."""
+    client = _client()
+    client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "session1"})
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+    client.signal_event.reset_mock()
+
+    def _create(*_: object) -> dict[str, str]:
+        for error in errors:
+            first_error_callback(error)
+        return {"sessionId": "session1"}
+
+    client.api.playback_session.create_session.side_effect = _create
+    with pytest.raises(FailedCommand) as excinfo:
+        await group.create_playback_session()
+
+    assert excinfo.value.error_code == "ERROR_SESSION_EVICTED"
+    assert group.active_session_id is None
+    assert group._deferred_session_errors == []
+    codes = [call.args[0].data["errorCode"] for call in client.signal_event.call_args_list]
+    assert codes == signalled
+
+
+async def test_an_eviction_among_the_errors_held_back_during_a_failed_creation_counts() -> None:
+    """A creation that fails replays an eviction held back for the old session, then the rest."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+    client.signal_event.reset_mock()
+
+    def _create(*_: object) -> dict[str, str]:
+        first_error_callback(EVICTED)
+        first_error_callback(PLAYBACK_FAILED)
+        raise FailedCommand("ERROR_INVALID_PARAMETER")
+
+    client.api.playback_session.create_session.side_effect = _create
+    with pytest.raises(FailedCommand, match="ERROR_INVALID_PARAMETER"):
+        await group.create_playback_session()
+
+    assert group.active_session_id is None
+    assert group._evicted_session_id == "session1"
+    assert group._deferred_session_errors == []
+    client.signal_event.assert_called_once()
+    assert client.signal_event.call_args.args[0].data["errorCode"] == "ERROR_SESSION_EVICTED"
 
 
 async def test_cleanup_tolerates_a_session_unsubscribe_on_a_closed_connection() -> None:

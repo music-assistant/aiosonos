@@ -157,6 +157,23 @@ async def test_groups_event_sets_up_an_unsubscribed_own_group_once() -> None:
     assert group.coordinated_by_client
 
 
+async def test_a_setup_scheduled_by_a_groups_event_keeps_the_data_of_a_later_one() -> None:
+    """A second groups event handled before the setup task runs is not overwritten by the first."""
+    client = _client()
+    client.api = _api()
+    group = _group(client, OTHER)
+    client._groups = {"group1": group}
+    first = {"id": "group1", "coordinatorId": PLAYER, "playerIds": [PLAYER, OTHER]}
+    second = {"id": "group1", "coordinatorId": PLAYER, "playerIds": [PLAYER]}
+
+    client._handle_groups_event({"groups": [first], "players": []})
+    client._handle_groups_event({"groups": [second], "players": []})
+    await client._group_setups["group1"]
+
+    assert group.is_subscribed
+    assert group.player_ids == [PLAYER]
+
+
 async def test_group_moving_to_a_remote_coordinator_drops_its_subscriptions() -> None:
     """A group that moves away from this player loses its subscriptions and pending setup."""
     client = _client()
