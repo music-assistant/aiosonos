@@ -95,11 +95,19 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
             event body.
         :return: Handle to stop listening.
         """
-        self._group_coordinator_listeners.append(callback)
+
+        # one listener object per call, so the handle stops only its own registration
+        # even when the same callback is registered twice
+        def _listener(group_id: str, event_data: GroupCoordinatorChanged) -> None:
+            # events are delivered a tick after they arrive: not to a listener stopped since
+            if _listener in self._group_coordinator_listeners:
+                callback(group_id, event_data)
+
+        self._group_coordinator_listeners.append(_listener)
 
         def _unsubscribe() -> None:
             with suppress(ValueError):
-                self._group_coordinator_listeners.remove(callback)
+                self._group_coordinator_listeners.remove(_listener)
 
         return _unsubscribe
 

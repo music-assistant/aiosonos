@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
 from aiosonos.api.models import LoadContentRequest, PlaybackError, PlaybackStatus, PlayModes
 
 from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackType
-
-if TYPE_CHECKING:
-    from aiosonos.api import SonosLocalWebSocketsApi
 
 
 class PlaybackNameSpace(SonosNameSpace):
@@ -20,11 +15,6 @@ class PlaybackNameSpace(SonosNameSpace):
     error_event_type = "playbackError"
     _event_model = PlaybackStatus
     _event_key = "groupId"
-
-    def __init__(self, api: SonosLocalWebSocketsApi) -> None:
-        """Handle Initialization."""
-        super().__init__(api)
-        self._error_listeners: dict[str, SubscribeCallbackType[PlaybackError]] = {}
 
     async def get_playback_status(
         self,
@@ -284,24 +274,4 @@ class PlaybackNameSpace(SonosNameSpace):
         Reference:
         https://docs.sonos.com/reference/playback-subscribe-groupid
         """
-
-        # one listener object per call, so the subscription it belongs to is known
-        # even when the same callback (or none) is given twice
-        def _on_playback_error(error: PlaybackError) -> None:
-            if error_callback is not None:
-                error_callback(error)
-
-        unsubscribe = await self._handle_subscribe(group_id, callback)
-        self._error_listeners[group_id] = _on_playback_error
-
-        def _unsubscribe() -> None:
-            if self._error_listeners.get(group_id) is _on_playback_error:
-                del self._error_listeners[group_id]
-            unsubscribe()
-
-        return _unsubscribe
-
-    async def _handle_error_event(self, event: dict[str, Any], event_data: PlaybackError) -> None:
-        """Forward a playbackError event to the subscribed error listener."""
-        if handler := self._error_listeners.get(event[self._event_key]):
-            handler(event_data)
+        return await self._handle_subscribe(group_id, callback, error_callback)
