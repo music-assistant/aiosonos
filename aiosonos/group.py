@@ -103,6 +103,9 @@ class SonosGroup:
         # the session evicted since the last creation started: handed back by that
         # creation, or subscribed to by it, it is refused; one evicted earlier is not
         self._evicted_session_id: str | None = None
+        # how often the active session was evicted; a stop ordered before an eviction
+        # that finds no session afterwards is complete
+        self._evictions = 0
         # advanced by cleanup, so a session subscription that completes after it
         # is undone instead of installed
         self._cleanup_generation = 0
@@ -307,9 +310,14 @@ class SonosGroup:
         player does not answer, `InvalidState` when the group is cleaned up while the clear
         session is made.
         """
+        # a play under the lock may give this stop its session yet; evicted before the
+        # stop gets its turn, that session counts as stopped as well
+        evictions = self._evictions
         async with self._session_lock:
             generation = self._cleanup_generation
             session_id = self.active_session_id
+            if session_id is None and self._evictions != evictions:
+                return
             try:
                 # always first attempt to suspend the active session
                 await self.client.api.playback_session.suspend(session_id)
@@ -724,6 +732,7 @@ class SonosGroup:
         if evicted:
             # the group is no longer under this session's control
             self.active_session_id = None
+            self._evictions += 1
         self.client.signal_event(
             SessionErrorEvent(
                 EventType.SESSION_ERROR,

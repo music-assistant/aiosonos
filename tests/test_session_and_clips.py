@@ -780,6 +780,131 @@ async def test_a_stop_ordered_during_a_play_lands_after_its_load() -> None:
     assert group.active_session_id is None
 
 
+async def test_a_stop_ordered_while_a_play_creates_its_session_ends_at_its_eviction() -> None:
+    """A stop queued while a play still creates its session: that session evicted, no clear."""
+    client = _client()
+    group = _group(client)
+    creating = asyncio.Event()
+    created = asyncio.Event()
+    evicted = asyncio.Event()
+
+    async def _create(*_: object) -> dict[str, str]:
+        creating.set()
+        await created.wait()
+        return {"sessionId": "session1"}
+
+    async def _load(*_: object, **__: object) -> None:
+        _session_error_callback(client)(EVICTED)
+        evicted.set()
+
+    client.api.playback_session.create_session = AsyncMock(side_effect=_create)
+    client.api.playback_session.load_cloud_queue = AsyncMock(side_effect=_load)
+    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
+    client.api.playback_session.load_stream_url = AsyncMock()
+    play = asyncio.ensure_future(group.play_cloud_queue("http://host/queue/"))
+    await creating.wait()
+    stop = asyncio.ensure_future(group.stop())
+    await asyncio.sleep(0)
+    created.set()
+    await asyncio.gather(play, stop)
+
+    client.api.playback_session.suspend.assert_not_awaited()
+    client.api.playback_session.load_stream_url.assert_not_awaited()
+    assert group.active_session_id is None
+
+
+async def test_a_stop_lands_on_the_session_made_after_an_eviction_while_it_waited() -> None:
+    """An eviction while the stop waits does not end it when a newer session is active by then."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    error_callback = _session_error_callback(client)
+    creating = asyncio.Event()
+    created = asyncio.Event()
+
+    async def _create(*_: object) -> dict[str, str]:
+        creating.set()
+        await created.wait()
+        error_callback(EVICTED)  # the old session goes as the new one is made
+        return {"sessionId": "session2"}
+
+    client.api.playback_session.create_session = AsyncMock(side_effect=_create)
+    client.api.playback_session.load_stream_url = AsyncMock()
+    client.api.playback_session.suspend = AsyncMock()
+    play = asyncio.ensure_future(group.play_stream_url("http://host/stream", None))
+    await creating.wait()
+    stop = asyncio.ensure_future(group.stop())
+    await asyncio.sleep(0)
+    created.set()
+    await asyncio.gather(play, stop)
+
+    client.api.playback_session.suspend.assert_awaited_once_with("session2")
+    assert group.active_session_id is None
+
+
+async def test_an_eviction_of_a_stopped_session_does_not_end_a_waiting_stop() -> None:
+    """Only the active session's eviction counts: a stopped one evicted meanwhile, it clears."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    error_callback = _session_error_callback(client)
+    client.api.playback_session.suspend = AsyncMock()
+    await group.stop()  # session1 stopped, still listened to
+    creating = asyncio.Event()
+    creations = 0
+
+    async def _create(*_: object) -> dict[str, str]:
+        nonlocal creations
+        creations += 1
+        if creations > 1:
+            return {"sessionId": "session2"}  # the clear session of the stop
+        creating.set()
+        await asyncio.sleep(0.01)
+        error_callback(EVICTED)
+        raise FailedCommand("ERROR_SESSION_IN_PROGRESS")
+
+    client.api.playback_session.create_session = AsyncMock(side_effect=_create)
+    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
+    client.api.playback_session.load_stream_url = AsyncMock()
+    creation = asyncio.ensure_future(group.create_playback_session())
+    await creating.wait()
+    stop = asyncio.ensure_future(group.stop())
+    with pytest.raises(FailedCommand):
+        await creation
+    await stop
+
+    client.api.playback_session.load_stream_url.assert_awaited_once()
+
+
+async def test_a_stop_whose_session_is_evicted_while_it_waits_loads_nothing() -> None:
+    """A stop queued behind a play, its session evicted during the load, sends no clear."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    error_callback = _session_error_callback(client)
+    loading = asyncio.Event()
+    evicted = asyncio.Event()
+
+    async def _load(*_: object, **__: object) -> None:
+        loading.set()
+        await evicted.wait()
+
+    client.api.playback_session.load_cloud_queue = AsyncMock(side_effect=_load)
+    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
+    client.api.playback_session.load_stream_url = AsyncMock()
+    play = asyncio.ensure_future(group.play_cloud_queue("http://host/queue/"))
+    await loading.wait()
+    stop = asyncio.ensure_future(group.stop())
+    await asyncio.sleep(0)
+    error_callback(EVICTED)
+    evicted.set()
+    await asyncio.gather(play, stop)
+
+    client.api.playback_session.suspend.assert_not_awaited()
+    client.api.playback_session.load_stream_url.assert_not_awaited()
+    assert group.active_session_id is None
+
+
 async def test_an_unanswered_session_subscribe_is_a_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
