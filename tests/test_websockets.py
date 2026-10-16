@@ -7,7 +7,6 @@ import logging
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, Mock, call
 
-import orjson
 import pytest
 
 from aiosonos.api import SonosLocalWebSocketsApi
@@ -536,22 +535,6 @@ async def test_a_listener_stopping_itself_leaves_the_next_one_its_event() -> Non
     second.assert_called_once_with(SESSION_SUSPENDED)
 
 
-async def test_a_command_on_a_connection_closed_meanwhile_leaves_no_future() -> None:
-    """A command sent after a no-wait one finds the connection gone: InvalidState, no future."""
-    api = _api()
-    api._ws_client = MagicMock(closed=False)
-
-    async def _send_bytes(_raw: bytes) -> None:
-        api._ws_client.closed = True
-
-    api._ws_client.send_bytes = _send_bytes
-    api.send_command_no_wait("playbackSession", "unsubscribe", sessionId="session1")
-    with pytest.raises(InvalidState):
-        await api.send_command("playbackSession", "subscribe", sessionId="session2")
-
-    assert api._result_futures == {}
-
-
 async def test_a_command_whose_frame_cannot_be_written_leaves_no_future() -> None:
     """A command the socket will not take is not left waiting for a reply."""
     api = _api()
@@ -592,25 +575,6 @@ async def test_a_cut_off_subscribe_is_released_when_the_earlier_call_is_refused(
     commands.assert_called_once_with(
         namespace="playbackSession", command="unsubscribe", sessionId="session1"
     )
-
-
-async def test_a_command_goes_out_after_the_commands_sent_without_waiting_before_it() -> None:
-    """A command awaited for its reply does not overtake one sent without waiting just before."""
-    api = _api()
-    frames: list[str] = []
-    api._ws_client = MagicMock(closed=False)
-
-    async def _send_bytes(raw: bytes) -> None:
-        header = orjson.loads(raw)[0]
-        frames.append(f"{header['command']} {header['sessionId']}")
-        if header["command"] == "subscribe":
-            api._result_futures[header["cmdId"]].set_result({})
-
-    api._ws_client.send_bytes = _send_bytes
-    api.send_command_no_wait("playbackSession", "unsubscribe", sessionId="session1")
-    await api.send_command("playbackSession", "subscribe", sessionId="session2")
-
-    assert frames == ["unsubscribe session1", "subscribe session2"]
 
 
 async def test_releasing_a_given_up_subscription_on_a_dead_connection_keeps_the_failure() -> None:

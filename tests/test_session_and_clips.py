@@ -636,36 +636,6 @@ async def test_a_new_connection_closes_the_one_still_open(monkeypatch: pytest.Mo
     assert client.api is new_api
 
 
-async def test_connections_made_together_leave_one_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Two connect() calls at once make one connection after the other; one stays open."""
-    client = _client()
-    discovery = {"playerId": PLAYER, "householdId": "household1", "websocketUrl": "wss://host"}
-    monkeypatch.setattr("aiosonos.client.get_discovery_info", AsyncMock(return_value=discovery))
-    apis: list[MagicMock] = []
-
-    def _api(*_: object) -> MagicMock:
-        api = MagicMock(connected=False)
-
-        async def _connect() -> None:
-            await asyncio.sleep(0)
-            api.connected = True
-
-        async def _disconnect() -> None:
-            api.connected = False
-
-        api.connect = AsyncMock(side_effect=_connect)
-        api.disconnect = AsyncMock(side_effect=_disconnect)
-        apis.append(api)
-        return api
-
-    monkeypatch.setattr("aiosonos.client.SonosLocalWebSocketsApi", _api)
-
-    await asyncio.gather(client.connect(), client.connect())
-
-    assert [api.connected for api in apis] == [False, True]
-    assert client.api is apis[1]
-
-
 async def test_an_eviction_while_subscribing_is_not_lost() -> None:
     """An eviction delivered before the subscribe reply ends the session; the next one is new."""
     client = _client()

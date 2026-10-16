@@ -67,7 +67,6 @@ class SonosLocalApiClient:
         self._subscribers: list[EventSubscriptionType] = []
         # one in-flight setup (or pending retry) per group id
         self._group_setups: dict[str, asyncio.Task[None]] = {}
-        self._connect_lock = asyncio.Lock()
 
     @property
     def player_id(self) -> str:
@@ -130,33 +129,32 @@ class SonosLocalApiClient:
             self._loop.call_soon_threadsafe(cb_func, event)
 
     async def connect(self) -> None:
-        """Connect to the API; connections are made one at a time, each replacing the last."""
+        """Connect to the API; a new connection replaces the last."""
         self._loop = asyncio.get_running_loop()
-        async with self._connect_lock:
-            # retrieve discovery details from player first
-            discovery_info = await get_discovery_info(self._aiohttp_session, self.player_ip)
-            self._player_id = discovery_info["playerId"]
-            self._household_id = discovery_info["householdId"]
-            if (old_api := getattr(self, "api", None)) is not None and old_api.connected:
-                # a connection still open is closed first: its listener loop ends and the
-                # subscriptions the speaker holds for it go with it
-                await old_api.disconnect()
-            # Connect to the local websocket API
-            self.api = SonosLocalWebSocketsApi(
-                discovery_info["websocketUrl"],
-                self._aiohttp_session,
-            )
-            # the groups' and player's subscriptions, and any group setup still being
-            # retried, belong to the connection this one replaces and went with it: undone
-            # here, start_listening makes them again
-            self._cancel_group_setups()
-            for group in self._groups.values():
-                group.cleanup()
-            if self._player is not None:
-                self._player.cleanup()
-            self.api.subscribe_group_coordinator_changed(self._handle_group_coordinator_changed)
-            # NOTE: connect will raise when connecting failed
-            await self.api.connect()
+        # retrieve discovery details from player first
+        discovery_info = await get_discovery_info(self._aiohttp_session, self.player_ip)
+        self._player_id = discovery_info["playerId"]
+        self._household_id = discovery_info["householdId"]
+        if (old_api := getattr(self, "api", None)) is not None and old_api.connected:
+            # a connection still open is closed first: its listener loop ends and the
+            # subscriptions the speaker holds for it go with it
+            await old_api.disconnect()
+        # Connect to the local websocket API
+        self.api = SonosLocalWebSocketsApi(
+            discovery_info["websocketUrl"],
+            self._aiohttp_session,
+        )
+        # the groups' and player's subscriptions, and any group setup still being
+        # retried, belong to the connection this one replaces and went with it: undone
+        # here, start_listening makes them again
+        self._cancel_group_setups()
+        for group in self._groups.values():
+            group.cleanup()
+        if self._player is not None:
+            self._player.cleanup()
+        self.api.subscribe_group_coordinator_changed(self._handle_group_coordinator_changed)
+        # NOTE: connect will raise when connecting failed
+        await self.api.connect()
 
     async def disconnect(self) -> None:
         """Disconnect the client and cleanup."""
