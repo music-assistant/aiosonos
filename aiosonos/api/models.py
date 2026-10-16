@@ -101,9 +101,10 @@ class AudioClip(TypedDict):
     name: str  # User identifiable string.
     appId: str  # The unique identifier for the app that created the audio clip.
     priority: AudioClipPriority
-    clipType: AudioClipType  # e.g. 'CHIME'
+    clipType: NotRequired[AudioClipType]  # e.g. 'CHIME'
     status: AudioClipStatus  # This field indicates the state of the audio clip
     clipLEDBehavior: AudioClipLEDBehavior  # e.g. 'WHITE_LED_QUICK_BREATHING'
+    errorCode: NotRequired[str]  # set when the clip failed
 
 
 class AudioClipStatusEvent(TypedDict):
@@ -175,6 +176,33 @@ class Group(TypedDict):
     playbackState: NotRequired[str]
     playerIds: list[str]
     areaIds: NotRequired[list[str]]
+
+
+class GroupStatus(StrEnum):
+    """
+    Enum with the possible statuses in a groupCoordinatorChanged event.
+
+    Reference: https://docs.sonos.com/reference/groups-subscribe-householdid
+    """
+
+    GONE = "GROUP_STATUS_GONE"
+    MOVED = "GROUP_STATUS_MOVED"
+    UPDATED = "GROUP_STATUS_UPDATED"
+
+
+class GroupCoordinatorChanged(TypedDict):
+    """
+    Representation of a groupCoordinatorChanged event (global namespace).
+
+    Sent to subscribers of a group when its coordinator or members change.
+    With GROUP_STATUS_MOVED, playerId and websocketUrl name the new coordinator.
+    """
+
+    _objectType: str  # = groupCoordinatorChanged
+    groupStatus: GroupStatus
+    groupName: NotRequired[str]
+    playerId: NotRequired[str]
+    websocketUrl: NotRequired[str]
 
 
 class GroupInfo(TypedDict):
@@ -584,6 +612,30 @@ class SessionStatus(TypedDict):
     sessionState: str  # SESSION_STATE_CONNECTED
     sessionCreated: bool
     customData: str
+
+
+class SessionInfo(TypedDict):
+    """
+    Representation of a sessionInfo event (playbackSession namespace).
+
+    Reference: https://docs.sonos.com/reference/sessioninfo
+    """
+
+    _objectType: str  # = sessionInfo
+    suspended: bool
+
+
+class SessionError(TypedDict):
+    """
+    Representation of a sessionError event (playbackSession namespace).
+
+    Reference: https://docs.sonos.com/reference/playbacksession-sessionerror
+    """
+
+    _objectType: str  # = sessionError
+    errorCode: str  # e.g. 'ERROR_SESSION_EVICTED'
+    reason: NotRequired[str]
+    sessionId: NotRequired[str]
 
 
 class LoadContentRequest(TypedDict):

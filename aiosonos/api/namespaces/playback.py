@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
 from aiosonos.api.models import LoadContentRequest, PlaybackError, PlaybackStatus, PlayModes
 
 from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackType
-
-if TYPE_CHECKING:
-    from aiosonos.api import SonosLocalWebSocketsApi
 
 
 class PlaybackNameSpace(SonosNameSpace):
@@ -20,11 +15,6 @@ class PlaybackNameSpace(SonosNameSpace):
     error_event_type = "playbackError"
     _event_model = PlaybackStatus
     _event_key = "groupId"
-
-    def __init__(self, api: SonosLocalWebSocketsApi) -> None:
-        """Handle Initialization."""
-        super().__init__(api)
-        self._error_listeners: dict[str, SubscribeCallbackType[PlaybackError]] = {}
 
     async def get_playback_status(
         self,
@@ -278,24 +268,10 @@ class PlaybackNameSpace(SonosNameSpace):
         The optional error_callback receives playbackError events,
         sent when the group fails to play an item.
 
-        Returns handle to unsubscribe.
+        Returns handle that stops this call's listener (a no-op once used); the
+        player's subscription is released when the last listener to the group stops.
 
         Reference:
         https://docs.sonos.com/reference/playback-subscribe-groupid
         """
-        unsubscribe = await self._handle_subscribe(group_id, callback)
-        if error_callback is None:
-            self._error_listeners.pop(group_id, None)
-        else:
-            self._error_listeners[group_id] = error_callback
-
-        def _unsubscribe() -> None:
-            self._error_listeners.pop(group_id, None)
-            unsubscribe()
-
-        return _unsubscribe
-
-    async def _handle_error_event(self, event: dict[str, Any], event_data: PlaybackError) -> None:
-        """Forward a playbackError event to the subscribed error listener."""
-        if handler := self._error_listeners.get(event[self._event_key]):
-            handler(event_data)
+        return await self._handle_subscribe(group_id, callback, error_callback)

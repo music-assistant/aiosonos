@@ -13,7 +13,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Self, cast
 
-from aiosonos.const import EventType, GroupEvent, SonosEvent
+from aiosonos.const import EventType, GroupCoordinatorChangedEvent, GroupEvent, SonosEvent
 from aiosonos.utils import get_discovery_info
 
 from .api.websockets import SonosLocalWebSocketsApi
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
     from aiohttp import ClientSession
 
-    from aiosonos.api.models import GroupInfo
+    from aiosonos.api.models import GroupCoordinatorChanged, GroupInfo
 
     from .api.models import Group as GroupData
     from .api.models import Groups as GroupsData
@@ -129,25 +129,36 @@ class SonosLocalApiClient:
             self._loop.call_soon_threadsafe(cb_func, event)
 
     async def connect(self) -> None:
-        """Connect to the API."""
+        """Connect to the API; a new connection replaces the last."""
         self._loop = asyncio.get_running_loop()
         # retrieve discovery details from player first
         discovery_info = await get_discovery_info(self._aiohttp_session, self.player_ip)
         self._player_id = discovery_info["playerId"]
         self._household_id = discovery_info["householdId"]
+        if (old_api := getattr(self, "api", None)) is not None and old_api.connected:
+            # a connection still open is closed first: its listener loop ends and the
+            # subscriptions the speaker holds for it go with it
+            await old_api.disconnect()
         # Connect to the local websocket API
         self.api = SonosLocalWebSocketsApi(
             discovery_info["websocketUrl"],
             self._aiohttp_session,
         )
+        # the groups' and player's subscriptions, and any group setup still being
+        # retried, belong to the connection this one replaces and went with it: undone
+        # here, start_listening makes them again
+        self._cancel_group_setups()
+        for group in self._groups.values():
+            group.cleanup()
+        if self._player is not None:
+            self._player.cleanup()
+        self.api.subscribe_group_coordinator_changed(self._handle_group_coordinator_changed)
         # NOTE: connect will raise when connecting failed
         await self.api.connect()
 
     async def disconnect(self) -> None:
         """Disconnect the client and cleanup."""
-        for task in self._group_setups.values():
-            task.cancel()
-        self._group_setups.clear()
+        self._cancel_group_setups()
         await self.api.disconnect()
 
     async def start_listening(self, init_ready: asyncio.Event | None = None) -> None:
@@ -159,6 +170,10 @@ class SonosLocalApiClient:
             include_device_info=True,
         )
         for group_data in groups_data["groups"]:
+            if (group := self._groups.get(group_data["id"])) is not None:
+                # kept from an earlier connection: its coordinator may have changed
+                # while this player was disconnected, and async_init goes by it
+                group.update_data(group_data)
             await self._setup_group(group_data)
         # Although all players are returned in the groups data,
         # the local api can only process the player that it is connected to
@@ -166,7 +181,12 @@ class SonosLocalApiClient:
         # an individual api connection should be set-up to manage the player.
         # The Cloud API however is able to manage all players in the household.
         player_data = next(x for x in groups_data["players"] if x["id"] == self._player_id)
-        self._player = player = SonosPlayer(self, player_data)
+        if (player := self._player) is None:
+            self._player = player = SonosPlayer(self, player_data)
+        else:
+            # the object callers hold, cleaned up by connect() for this connection:
+            # kept, so a clip subscribed to meanwhile is the player's own
+            player.update_data(player_data)
         await player.async_init()
         # setup global groups/player subscription
         await self.api.groups.subscribe(self._household_id, self._handle_groups_event)
@@ -228,9 +248,8 @@ class SonosLocalApiClient:
             # same group_id is delivered before the task gets a chance to run,
             # we want that second event to take the update_data() branch above
             # rather than queue a duplicate _setup_group task. Two concurrent
-            # setups would each call .subscribe() for the same id and the
-            # second one would overwrite the first listener, leaving the group
-            # with no working callbacks.
+            # setups would each subscribe to the same ids and the group would
+            # get every event twice.
             self._groups[group_data["id"]] = SonosGroup(self, group_data)
             self._schedule_group_setup(group_data)
         # check if any groups are removed
@@ -275,6 +294,28 @@ class SonosLocalApiClient:
                 continue
             remaining = [x for x in group.player_ids if x not in reported_players]
             group.update_data(cast("GroupData", {"id": group.id, "playerIds": remaining}))
+
+    def _handle_group_coordinator_changed(
+        self,
+        group_id: str,
+        data: GroupCoordinatorChanged,
+    ) -> None:
+        """
+        Forward a groupCoordinatorChanged event to subscribers.
+
+        Signalled whether or not the group is still known here: on a move, the
+        player sends it before the groups event that replaces the old group.
+
+        :param group_id: The group the event is about, from the event header.
+        :param data: The event body.
+        """
+        self.signal_event(
+            GroupCoordinatorChangedEvent(
+                EventType.GROUP_COORDINATOR_CHANGED,
+                group_id,
+                data,
+            ),
+        )
 
     def _schedule_group_setup(self, group_data: GroupData) -> None:
         """Set up a group in the background, unless a setup for it is under way."""
@@ -371,6 +412,12 @@ class SonosLocalApiClient:
             len(SETUP_RETRY_DELAYS) + 1,
             error,
         )
+
+    def _cancel_group_setups(self) -> None:
+        """Cancel every group setup (or retry of one) still under way."""
+        for task in self._group_setups.values():
+            task.cancel()
+        self._group_setups.clear()
 
     async def __aenter__(self) -> Self:
         """Initialize and connect."""

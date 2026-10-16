@@ -48,6 +48,7 @@ def test_removed_group_is_cleaned_up() -> None:
 async def test_normal_add_signals_group_added_once() -> None:
     """A successful group setup signals GROUP_ADDED exactly once."""
     client = SonosLocalApiClient("1.2.3.4", MagicMock())
+    client._player_id = "RINCON_ME"
     client.signal_event = MagicMock()
     api = MagicMock()
     api.group_volume.get_volume = AsyncMock(return_value={})
@@ -60,7 +61,7 @@ async def test_normal_add_signals_group_added_once() -> None:
     api.playback_metadata.subscribe = AsyncMock(return_value=Mock())
     client.api = api
 
-    await client._setup_group({"id": "group1"})
+    await client._setup_group({"id": "group1", "coordinatorId": "RINCON_ME"})
 
     client.signal_event.assert_called_once()
     event = client.signal_event.call_args.args[0]
@@ -269,3 +270,83 @@ async def test_start_listening_without_ready_event() -> None:
     await client.start_listening()
 
     assert client.player.id == "RINCON_ME"
+
+
+async def test_start_listening_keeps_the_player_across_connections() -> None:
+    """A new connection refreshes the player callers hold instead of replacing it."""
+    client = SonosLocalApiClient("1.2.3.4", MagicMock())
+    client._player_id = "RINCON_ME"
+    client._household_id = "Sonos_1"
+    client._loop = asyncio.get_running_loop()
+    client.signal_event = MagicMock()
+    api = MagicMock()
+    api.start_listening = AsyncMock()
+    api.groups.get_groups = AsyncMock(
+        side_effect=[
+            {"groups": [], "players": [{"id": "RINCON_ME", "name": "Me"}]},
+            {"groups": [], "players": [{"id": "RINCON_ME", "name": "Me, renamed"}]},
+        ]
+    )
+    api.groups.subscribe = AsyncMock()
+    api.player_volume.get_volume = AsyncMock(return_value={})
+    api.player_volume.subscribe = AsyncMock()
+    client.api = api
+    await client.start_listening()
+    player = client.player
+
+    await client.start_listening()
+
+    assert client.player is player
+    assert player.name == "Me, renamed"
+    assert api.player_volume.subscribe.await_count == 2
+
+
+async def test_start_listening_refreshes_a_group_kept_across_connections() -> None:
+    """A group that moved onto this player while it was disconnected is set up on reconnect."""
+    client = SonosLocalApiClient("1.2.3.4", MagicMock())
+    client._player_id = "RINCON_ME"
+    client._household_id = "Sonos_1"
+    client._loop = asyncio.get_running_loop()
+    client.signal_event = MagicMock()
+    api = MagicMock()
+    api.start_listening = AsyncMock()
+    players = [{"id": "RINCON_ME", "name": "Me"}]
+    api.groups.get_groups = AsyncMock(
+        side_effect=[
+            {
+                "groups": [
+                    {"id": "group1", "coordinatorId": "RINCON_OTHER", "playerIds": ["RINCON_ME"]}
+                ],
+                "players": players,
+            },
+            {
+                "groups": [
+                    {"id": "group1", "coordinatorId": "RINCON_ME", "playerIds": ["RINCON_ME"]}
+                ],
+                "players": players,
+            },
+        ]
+    )
+    api.groups.subscribe = AsyncMock()
+    api.player_volume.get_volume = AsyncMock(return_value={})
+    api.player_volume.subscribe = AsyncMock()
+    api.group_volume.get_volume = AsyncMock(return_value={})
+    api.playback.get_playback_status = AsyncMock(
+        return_value={"availablePlaybackActions": {}, "playModes": {}},
+    )
+    api.playback_metadata.get_metadata_status = AsyncMock(return_value={})
+    api.playback.subscribe = AsyncMock(return_value=Mock())
+    api.group_volume.subscribe = AsyncMock(return_value=Mock())
+    api.playback_metadata.subscribe = AsyncMock(return_value=Mock())
+    client.api = api
+    await client.start_listening()
+    group = client._groups["group1"]
+    assert not group.coordinated_by_client
+    assert not group.is_subscribed
+
+    await client.start_listening()
+
+    assert client._groups["group1"] is group
+    assert group.coordinated_by_client
+    assert group.is_subscribed
+    api.playback.subscribe.assert_awaited_once()
