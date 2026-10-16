@@ -328,6 +328,7 @@ class SonosGroup:
                 if session_id is not None and err.error_code == SESSION_EVICTED_ERROR:
                     # the reply says what a sessionError event would: handled as one
                     self._handle_session_error(generation, session_id, _session_error(err))
+                    return
                 if session_id is not None and session_id == self._evicted_session_id:
                     # another app or source took the group over meanwhile: the session is
                     # stopped, and the clear below would take the group back from it
