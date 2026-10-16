@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ _T = TypeVar("_T")
 
 SubscribeCallbackType = Callable[[_T], None]
 UnsubscribeCallbackType = Callable[[], None]
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, eq=False)
@@ -55,14 +58,14 @@ class SonosNameSpace:
             for listener in list(subscription.listeners):
                 # not to a listener stopped by one before it
                 if listener in subscription.listeners:
-                    listener.callback(event_data)
+                    self._deliver(listener.callback, event_data)
 
     async def _handle_error_event(self, event: dict[str, Any], event_data: Any) -> None:
         """Forward an error event (playbackError, sessionError) to its listeners."""
         if subscription := self._subscriptions.get(event.get(self._event_key)):
             for listener in list(subscription.listeners):
                 if listener in subscription.listeners and listener.error_callback is not None:
-                    listener.error_callback(event_data)
+                    self._deliver(listener.error_callback, event_data)
 
     async def _handle_subscribe(
         self,
@@ -116,3 +119,10 @@ class SonosNameSpace:
             command="unsubscribe",
             **{self._event_key: event_id},
         )
+
+    def _deliver(self, callback: SubscribeCallbackType, event_data: Any) -> None:
+        """Call one listener; its failure is logged so the others still get the event."""
+        try:
+            callback(event_data)
+        except Exception:
+            _LOGGER.exception("Error in a %s event listener", self.namespace)

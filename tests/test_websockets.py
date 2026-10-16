@@ -383,6 +383,27 @@ async def test_a_listener_stopped_by_an_earlier_one_misses_the_event(message: tu
 
 
 @pytest.mark.parametrize("message", FAN_OUT_EVENTS, ids=["event", "error"])
+async def test_a_failing_listener_does_not_keep_the_event_from_the_next_one(
+    message: tuple, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A callback that raises is logged; the listeners after it still get the event."""
+    api = _api()
+    _answer_commands(api)
+    second = Mock()
+    await api.playback_session.subscribe(
+        "session1", *_listener_args(Mock(side_effect=RuntimeError("boom")), message)
+    )
+    await api.playback_session.subscribe("session1", *_listener_args(second, message))
+
+    with caplog.at_level(logging.ERROR):
+        api._handle_incoming_message(message)
+        await _drain()
+
+    second.assert_called_once_with(message[1])
+    assert "Error in a playbackSession event listener" in caplog.text
+
+
+@pytest.mark.parametrize("message", FAN_OUT_EVENTS, ids=["event", "error"])
 async def test_a_listener_stopping_itself_leaves_the_next_one_its_event(message: tuple) -> None:
     """A callback that uses its own handle does not make the listener after it miss the event."""
     api = _api()
@@ -465,14 +486,19 @@ async def test_unsubscribing_a_session_leaves_a_newer_subscription_alone() -> No
     [("playback", "groupId"), ("playback_session", "sessionId")],
 )
 async def test_an_error_for_a_subscription_without_error_callback_is_dropped(
-    namespace: str, event_key: str
+    namespace: str, event_key: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A subscription made without an error callback takes its namespace's errors silently."""
     api = _api()
     _answer_commands(api)
     await getattr(api, namespace).subscribe("id1", Mock())
 
-    await getattr(api, namespace)._handle_error_event({event_key: "id1"}, {"errorCode": "ERROR"})
+    with caplog.at_level(logging.ERROR):
+        await getattr(api, namespace)._handle_error_event(
+            {event_key: "id1"}, {"errorCode": "ERROR"}
+        )
+
+    assert "event listener" not in caplog.text
 
 
 async def test_a_used_unsubscribe_handle_sends_nothing_and_leaves_other_listeners() -> None:

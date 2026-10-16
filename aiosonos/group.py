@@ -302,17 +302,28 @@ class SonosGroup:
         """
         Send stop command to group; a stop ordered during a play lands after it.
 
-        A session evicted meanwhile counts as stopped. Raises `CommandTimeout` when the
-        player does not answer, `InvalidState` when the group is cleaned up during the stop.
+        A session evicted meanwhile counts as stopped, and nothing else is loaded, so the
+        group is not taken back from whatever took it over. Raises `CommandTimeout` when the
+        player does not answer, `InvalidState` when the group is cleaned up while the clear
+        session is made.
         """
         async with self._session_lock:
+            generation = self._cleanup_generation
+            session_id = self.active_session_id
             try:
                 # always first attempt to suspend the active session
-                await self.client.api.playback_session.suspend(self.active_session_id)
+                await self.client.api.playback_session.suspend(session_id)
             except CommandTimeout:
                 # the player may have suspended already; do not clear its queue
                 raise
-            except FailedCommand:
+            except FailedCommand as err:
+                if session_id is not None and err.error_code == SESSION_EVICTED_ERROR:
+                    # the reply says what a sessionError event would: handled as one
+                    self._handle_session_error(generation, session_id, _session_error(err))
+                if session_id is not None and session_id == self._evicted_session_id:
+                    # another app or source took the group over meanwhile: the session is
+                    # stopped, and the clear below would take the group back from it
+                    return
                 # this turns out the best way to clear the queue,
                 # just send an invalid uri and it will clear the queue
                 # and stop any playing content, including linein sources

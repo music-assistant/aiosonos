@@ -1066,6 +1066,59 @@ async def test_a_queue_started_during_an_evicted_creation_gets_its_own_session()
     assert group.active_session_id == "session2"
 
 
+async def test_a_stop_whose_suspend_reply_says_evicted_loads_nothing() -> None:
+    """An eviction in the suspend reply ends the stop: no clear session takes the group back."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    client.signal_event.reset_mock()
+    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand(EVICTED["errorCode"]))
+    client.api.playback_session.load_stream_url = AsyncMock()
+
+    await group.stop()
+
+    client.api.playback_session.create_session.assert_awaited_once()
+    client.api.playback_session.load_stream_url.assert_not_awaited()
+    assert group.active_session_id is None
+    assert group._subscribed_session_id is None
+    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
+
+
+async def test_a_session_evicted_during_its_suspend_is_not_cleared_after() -> None:
+    """An eviction event during the suspend ends the stop: no clear session takes the group back."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+    client.signal_event.reset_mock()
+    client.api.playback_session.load_stream_url = AsyncMock()
+
+    async def _suspend(*_: object) -> None:
+        first_error_callback(EVICTED)
+        raise FailedCommand("ERROR_INVALID_SESSION")
+
+    client.api.playback_session.suspend = AsyncMock(side_effect=_suspend)
+    await group.stop()
+
+    client.api.playback_session.create_session.assert_awaited_once()
+    client.api.playback_session.load_stream_url.assert_not_awaited()
+    assert group.active_session_id is None
+    client.signal_event.assert_called_once()
+
+
+async def test_a_stop_without_a_session_still_clears_the_queue() -> None:
+    """With no session to suspend, the stop clears the queue as before."""
+    client = _client()
+    group = _group(client)
+    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
+    client.api.playback_session.load_stream_url = AsyncMock()
+
+    await group.stop()
+
+    client.api.playback_session.load_stream_url.assert_awaited_once()
+    assert group.active_session_id is None
+
+
 async def test_a_stops_own_clear_does_not_signal_the_eviction_of_the_stopped_session() -> None:
     """The clear session a stop makes evicts the stopped one; that is the stop's doing."""
     client = _client()
