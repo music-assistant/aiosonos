@@ -100,17 +100,15 @@ class SonosGroup:
         # handed back by the next createSession
         self._subscribed_session_id: str | None = None
         self._unsubscribe_session: Callable[[], None] | None = None
-        # the session evicted last, so a subscription to it that was under way is undone
+        # the session evicted since the last creation started: handed back by that
+        # creation, or subscribed to by it, it is refused; one evicted earlier is not
         self._evicted_session_id: str | None = None
         # advanced by cleanup, so a session subscription that completes after it
         # is undone instead of installed
         self._cleanup_generation = 0
-        # the session a replacement is under way for, and the errors held back for it (in
-        # order of arrival); one creation at a time, through to its subscription and the
-        # load that follows, so two never settle each other's replacement, subscribe to one
-        # session twice or load into a session that is still being subscribed to
-        self._replacing_session_id: str | None = None
-        self._deferred_session_errors: list[tuple[int, str, SessionError]] = []
+        # one creation at a time, through to its subscription and the load that follows,
+        # so two never subscribe to one session twice or load into a session that is
+        # still being subscribed to
         self._session_lock = asyncio.Lock()
 
     def cleanup(self) -> None:
@@ -318,6 +316,8 @@ class SonosGroup:
                 # this turns out the best way to clear the queue,
                 # just send an invalid uri and it will clear the queue
                 # and stop any playing content, including linein sources
+                # (the session is over either way: its eviction by the clear is no takeover)
+                self.active_session_id = None
                 try:
                     await self._play_stream_url("clear", None)
                 except CommandTimeout:
@@ -421,7 +421,9 @@ class SonosGroup:
 
         The session is subscribed to, so an eviction (another app or source took
         over the group) clears active_session_id and is signalled as a
-        SESSION_ERROR event. A refused subscription does not fail the session.
+        SESSION_ERROR event with the session's id; so is an eviction of the
+        previous session while this one is created. A refused subscription does
+        not fail the session.
 
         Raises FailedCommand (ERROR_SESSION_EVICTED) when the session was evicted,
         and InvalidState when the group was cleaned up, before this returns: the
@@ -576,31 +578,26 @@ class SonosGroup:
     ) -> SessionStatus:
         """Create and subscribe to a session; the caller holds _session_lock."""
         generation = self._cleanup_generation
-        # the new session evicts the one this group knows (in use, or stopped): an
-        # error for that one is held back until the outcome is known
-        self._replacing_session_id = self.active_session_id or self._subscribed_session_id
-        try:
-            session = await self.client.api.playback_session.create_session(
-                self.id,
-                app_id,
-                app_context,
-                account_id,
-                custom_data,
-            )
-        except BaseException:
-            self._end_session_replacement(replaced=False)
-            raise
+        # an eviction from here on is one that happened while the session was made; an
+        # earlier one does not count against a session the speaker hands back again
+        self._evicted_session_id = None
+        session = await self.client.api.playback_session.create_session(
+            self.id,
+            app_id,
+            app_context,
+            account_id,
+            custom_data,
+        )
         session_id = session["sessionId"]
-        if self._end_session_replacement(replaced=session_id != self._replacing_session_id):
-            # the speaker handed back a session evicted meanwhile: signalled, and not
-            # handed out to play on
+        if session_id == self._evicted_session_id:
+            # the speaker handed back a session evicted meanwhile: the event handled it
+            # (signalled when it was the active one), it is not handed out to play on
             msg = f"Session {session_id} was evicted while it was created"
             raise FailedCommand(SESSION_EVICTED_ERROR, msg)
         if generation != self._cleanup_generation:
             msg = f"Group {self.id} was cleaned up while session {session_id} was created"
             raise InvalidState(msg)
         self.active_session_id = session_id
-        self._evicted_session_id = None
         if self._subscribed_session_id == session_id:
             # listened to already: in use, or stopped and handed back again
             return session
@@ -679,28 +676,6 @@ class SonosGroup:
         else:
             self.active_session_id = None
 
-    def _end_session_replacement(self, *, replaced: bool) -> bool:
-        """
-        Settle the errors held back for the session a creation was under way for.
-
-        :param replaced: Whether another session took its place, which makes its eviction
-            this group's own doing.
-        :return: Whether the session was evicted, so it must not be put to use again.
-        """
-        deferred, self._deferred_session_errors = self._deferred_session_errors, []
-        self._replacing_session_id = None
-        if replaced:
-            # an eviction was this group's own doing
-            return False
-        evicted = False
-        for generation, session_id, data in deferred:
-            if generation != self._cleanup_generation:
-                continue  # cleaned up since: moot
-            # replayed in the order they arrived, so none displaces another
-            self._handle_session_error(generation, session_id, data)
-            evicted = evicted or data.get("errorCode") == SESSION_EVICTED_ERROR
-        return evicted
-
     def _stop_session_listener(self) -> None:
         """Stop listening to the session subscribed to (if any)."""
         if self._unsubscribe_session is None:
@@ -724,11 +699,6 @@ class SonosGroup:
         """
         if generation != self._cleanup_generation:
             # subscribed before the group was cleaned up: no longer its concern
-            return
-        if session_id == self._replacing_session_id:
-            # what it means depends on the outcome of the creation under way; held back
-            # with the others for that session, an eviction among them is kept
-            self._deferred_session_errors.append((generation, session_id, data))
             return
         evicted = data.get("errorCode") == SESSION_EVICTED_ERROR
         if evicted:

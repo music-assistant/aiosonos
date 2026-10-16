@@ -92,8 +92,8 @@ async def test_new_session_unsubscribes_the_previous_one() -> None:
     unsubscribes[1].assert_called_once()
 
 
-async def test_eviction_caused_by_a_replacement_is_not_signalled() -> None:
-    """The new session evicts the old one; that eviction is not reported as an error."""
+async def test_eviction_of_the_old_session_during_a_replacement_is_signalled() -> None:
+    """The new session evicts the old one while it is created; that is signalled for the old id."""
     client = _client()
     group = _group(client)
     await group.create_playback_session()
@@ -107,7 +107,10 @@ async def test_eviction_caused_by_a_replacement_is_not_signalled() -> None:
     await group.create_playback_session()
 
     assert group.active_session_id == "session2"
-    client.signal_event.assert_not_called()
+    client.signal_event.assert_called_once()
+    event = client.signal_event.call_args.args[0]
+    assert event.event_type == EventType.SESSION_ERROR
+    assert event.data["sessionId"] == "session1"
 
 
 async def test_refused_replacement_keeps_watching_the_old_session() -> None:
@@ -132,7 +135,7 @@ async def test_refused_replacement_keeps_watching_the_old_session() -> None:
 
 
 async def test_eviction_during_a_refused_replacement_still_counts() -> None:
-    """An eviction held back while a replacement was tried is handled when it fails."""
+    """An eviction while a replacement is tried is handled at once, also when that fails."""
     client = _client()
     group = _group(client)
     await group.create_playback_session()
@@ -445,7 +448,7 @@ async def test_the_same_session_handed_back_again_keeps_its_subscription() -> No
     assert listeners == {}
 
 
-async def test_an_eviction_before_the_same_session_is_handed_back_counts() -> None:
+async def test_a_session_evicted_during_create_session_and_handed_back_is_refused() -> None:
     """Evicted while asking for a session, and given the same one back: it is gone, not revived."""
     client = _client()
     group = _group(client)
@@ -688,7 +691,7 @@ async def test_an_eviction_while_subscribing_is_not_lost() -> None:
     assert commands == ["subscribe session1", "unsubscribe session1", "subscribe session2"]
 
 
-async def test_a_stopped_session_evicted_before_it_is_handed_back_is_not_revived() -> None:
+async def test_a_stopped_session_evicted_during_create_session_is_not_revived() -> None:
     """An eviction of the stopped session during createSession makes its id unusable."""
     client = _client()
     commands = _commands(client)
@@ -986,8 +989,8 @@ async def test_a_stream_loads_into_the_session_made_for_it() -> None:
     assert group.active_session_id == "session2"
 
 
-async def test_overlapping_replacements_do_not_report_a_takeover() -> None:
-    """Two replacements asked for together: the first failing does not expose the second's."""
+async def test_overlapping_replacements_signal_the_eviction_of_the_old_session() -> None:
+    """Two replacements asked for together: the eviction the second causes names the old session."""
     client = _client()
     group = _group(client)
     await group.create_playback_session()
@@ -1020,7 +1023,8 @@ async def test_overlapping_replacements_do_not_report_a_takeover() -> None:
     await second
 
     assert group.active_session_id == "session2"
-    client.signal_event.assert_not_called()
+    client.signal_event.assert_called_once()
+    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
 
 
 async def test_a_clip_played_meanwhile_waits_for_the_subscription() -> None:
@@ -1151,8 +1155,8 @@ async def test_a_queue_started_during_an_evicted_creation_gets_its_own_session()
     assert group.active_session_id == "session2"
 
 
-async def test_a_cleanup_after_a_deferred_eviction_is_moot() -> None:
-    """An eviction held back during createSession is dropped when the group is cleaned up."""
+async def test_an_eviction_during_a_creation_the_group_is_cleaned_up_for_is_signalled() -> None:
+    """An eviction during createSession counts, also when a cleanup follows it before the reply."""
     client = _client()
     group = _group(client)
     await group.create_playback_session()
@@ -1165,16 +1169,18 @@ async def test_a_cleanup_after_a_deferred_eviction_is_moot() -> None:
         return {"sessionId": "session1"}
 
     client.api.playback_session.create_session.side_effect = _create
-    with pytest.raises(InvalidState):
+    with pytest.raises(FailedCommand) as excinfo:
         await group.create_playback_session()
 
-    client.signal_event.assert_not_called()
+    assert excinfo.value.error_code == "ERROR_SESSION_EVICTED"
+
+    client.signal_event.assert_called_once()
+    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
     assert group.active_session_id is None
-    assert group._deferred_session_errors == []
 
 
-async def test_a_creation_cancelled_while_unanswered_settles_the_replacement() -> None:
-    """A creation cut short before its reply replays the error held back for the old session."""
+async def test_a_creation_cancelled_while_unanswered_leaves_the_eviction_handled() -> None:
+    """A creation cut short before its reply changes nothing about an eviction handled meanwhile."""
     client = _client()
     group = _group(client)
     await group.create_playback_session()
@@ -1194,10 +1200,29 @@ async def test_a_creation_cancelled_while_unanswered_settles_the_replacement() -
     with pytest.raises(asyncio.CancelledError):
         await creation
 
-    assert group._replacing_session_id is None
-    assert group._deferred_session_errors == []
     assert group.active_session_id is None
     assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
+
+
+async def test_a_stops_own_clear_does_not_signal_the_eviction_of_the_stopped_session() -> None:
+    """The clear session a stop makes evicts the stopped one; that is the stop's doing."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    first_error_callback = _session_error_callback(client)
+    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
+    client.api.playback_session.load_stream_url = AsyncMock()
+
+    def _create(*_: object) -> dict[str, str]:
+        first_error_callback(EVICTED)
+        return {"sessionId": "session2"}
+
+    client.api.playback_session.create_session.side_effect = _create
+    await group.stop()
+
+    client.signal_event.assert_not_called()
+    assert group.active_session_id is None
+    client.api.playback_session.load_stream_url.assert_awaited_once()
 
 
 async def test_a_stop_whose_clear_session_is_cleaned_up_loads_nothing() -> None:
@@ -1234,8 +1259,8 @@ async def test_an_evicted_session_handed_back_again_is_a_live_one() -> None:
     assert group.active_session_id == "session1"
 
 
-async def test_a_held_back_error_that_is_no_eviction_does_not_withhold_the_session() -> None:
-    """A non-eviction error held back for a session handed back again is replayed only."""
+async def test_an_error_that_is_no_eviction_does_not_withhold_the_session_handed_back() -> None:
+    """A non-eviction error during createSession is signalled; the session handed back is kept."""
     client = _client()
     client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "session1"})
     group = _group(client)
@@ -1264,11 +1289,11 @@ async def test_a_held_back_error_that_is_no_eviction_does_not_withhold_the_sessi
     ],
     ids=["eviction-first", "eviction-last"],
 )
-async def test_an_eviction_among_the_errors_held_back_withholds_the_session_handed_back(
+async def test_an_eviction_among_the_errors_during_a_creation_withholds_the_session(
     errors: tuple[dict[str, str], ...],
     signalled: list[str],
 ) -> None:
-    """Every error held back during createSession is replayed in order; an eviction counts."""
+    """Every error during createSession is handled as it arrives; an eviction among them counts."""
     client = _client()
     client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "session1"})
     group = _group(client)
@@ -1287,13 +1312,12 @@ async def test_an_eviction_among_the_errors_held_back_withholds_the_session_hand
 
     assert excinfo.value.error_code == "ERROR_SESSION_EVICTED"
     assert group.active_session_id is None
-    assert group._deferred_session_errors == []
     codes = [call.args[0].data["errorCode"] for call in client.signal_event.call_args_list]
     assert codes == signalled
 
 
-async def test_an_eviction_among_the_errors_held_back_during_a_failed_creation_counts() -> None:
-    """A creation that fails replays an eviction held back for the old session, then the rest."""
+async def test_an_eviction_among_the_errors_during_a_failed_creation_counts() -> None:
+    """An eviction during a createSession that fails ends the old session; a later error is moot."""
     client = _client()
     group = _group(client)
     await group.create_playback_session()
@@ -1311,7 +1335,6 @@ async def test_an_eviction_among_the_errors_held_back_during_a_failed_creation_c
 
     assert group.active_session_id is None
     assert group._evicted_session_id == "session1"
-    assert group._deferred_session_errors == []
     client.signal_event.assert_called_once()
     assert client.signal_event.call_args.args[0].data["errorCode"] == "ERROR_SESSION_EVICTED"
 
