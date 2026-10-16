@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
+
+from aiosonos.exceptions import CommandTimeout, FailedCommand, InvalidState
 
 if TYPE_CHECKING:
     from aiosonos.api import SonosLocalWebSocketsApi
@@ -28,6 +31,10 @@ class _Subscription:
     previous: _Subscription | None = None
     # its handle was used, or its subscribe failed: the id is not handed back to it
     ended: bool = False
+    # the speaker holds, or may hold, a subscription for it: its subscribe was accepted,
+    # or ended without the speaker refusing it, or a later call that handed the id back
+    # may hold one; to be released when the id is dropped
+    held: bool = False
 
 
 class SonosNameSpace:
@@ -70,14 +77,11 @@ class SonosNameSpace:
         def _unsubscribe() -> None:
             subscription.ended = True
             if self._subscriptions.get(event_id) is not subscription:
-                # a newer subscription holds the id (or this handle was used before)
+                # a newer subscription holds the id (or this handle was used before); a
+                # newer call that fails releases the speaker's subscription in its place
                 return
             del self._subscriptions[event_id]
-            self.api.send_command_no_wait(
-                namespace=self.namespace,
-                command="unsubscribe",
-                **{self._event_key: event_id},
-            )
+            self._send_unsubscribe(event_id)
 
         # listening from the call on: a reply or a handle of an older call to the same
         # id cannot take it away, and an error before the reply is not lost
@@ -88,17 +92,42 @@ class SonosNameSpace:
                 command="subscribe",
                 **{self._event_key: event_id},
             )
-        except BaseException:
+        except BaseException as err:
             subscription.ended = True
+            # only a refusal says the speaker holds nothing; unanswered, cancelled or cut
+            # off, the subscribe may have gone through (or a call handed back to this one did)
+            subscription.held = (
+                subscription.held
+                or isinstance(err, CommandTimeout)
+                or not isinstance(err, FailedCommand)
+            )
             if self._subscriptions.get(event_id) is subscription:
                 # hand the id back to the newest call it was taken from that is not over
+                release = subscription.held
                 while previous is not None and previous.ended:
+                    # a subscription given up while replaced left the speaker's to its
+                    # replacement: with none left, it is released here
+                    release = release or previous.held
                     previous = previous.previous
                 if previous is None:
                     del self._subscriptions[event_id]
+                    if release:
+                        with suppress(InvalidState):
+                            self._send_unsubscribe(event_id)
                 else:
+                    # what this call may hold is now the restored call's to release
+                    previous.held = previous.held or release
                     self._subscriptions[event_id] = previous
             raise
         # the id is held: nothing to hand back later
+        subscription.held = True
         subscription.previous = None
         return _unsubscribe
+
+    def _send_unsubscribe(self, event_id: str) -> None:
+        """Release the speaker's subscription to an id."""
+        self.api.send_command_no_wait(
+            namespace=self.namespace,
+            command="unsubscribe",
+            **{self._event_key: event_id},
+        )

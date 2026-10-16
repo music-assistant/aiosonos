@@ -74,6 +74,7 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         self.websocket_url = websocket_url
         self._ws_client: ClientWebSocketResponse | None = None
         self._result_futures: dict[str, asyncio.Future] = {}
+        self._sends_in_flight: set[asyncio.Task[None]] = set()
         self._group_coordinator_listeners: list[GroupCoordinatorChangedCallbackType] = []
 
     @property
@@ -122,6 +123,10 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
 
         Raises CommandTimeout when the player does not reply within COMMAND_TIMEOUT seconds.
         """
+        if self._sends_in_flight:
+            # a command sent without waiting goes out first: commands reach the player
+            # in the order they were sent (an unsubscribe before the next subscribe)
+            await asyncio.wait(list(self._sends_in_flight))
         if not self.connected or not self._loop:
             raise InvalidState("Not connected")
 
@@ -134,9 +139,9 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         )
         future: asyncio.Future[Any] = self._loop.create_future()
         self._result_futures[command_message["cmdId"]] = future
-        # body params are passed as options
-        await self._send_message([command_message, options or {}])
         try:
+            # body params are passed as options
+            await self._send_message([command_message, options or {}])
             async with asyncio.timeout(COMMAND_TIMEOUT):
                 return await future
         except TimeoutError:
@@ -165,7 +170,9 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
             **kwargs,
         )
         # body params are passed as options
-        self.create_task(self._send_message([command_message, options or {}]))
+        task = self.create_task(self._send_message([command_message, options or {}]))
+        self._sends_in_flight.add(task)
+        task.add_done_callback(self._sends_in_flight.discard)
 
     async def start_listening(self) -> None:
         """Connect (if needed) and start listening to incoming messages from the server."""

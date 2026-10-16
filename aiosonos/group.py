@@ -51,6 +51,14 @@ DEFAULT_APP_ID = "com.aiosonos.playback"
 DEFAULT_APP_CONTEXT = "1"
 
 
+def _session_error(err: FailedCommand) -> SessionError:
+    """Return the sessionError event a command reply with a session error code stands for."""
+    error: SessionError = {"_objectType": "sessionError", "errorCode": err.error_code}
+    if err.details:
+        error["reason"] = err.details
+    return error
+
+
 class SonosGroup:
     """Representation of a Sonos Group."""
 
@@ -112,16 +120,6 @@ class SonosGroup:
         self._stop_session_listener()
         # no session is vouched for without listening to it; the next play makes a new one
         self.active_session_id = None
-
-    def _unsubscribe_status(self) -> None:
-        """Stop the playback, volume and metadata status subscriptions (if any)."""
-        for unsubscribe_callback in self._unsubscribe_callbacks:
-            # On a closed connection the unsubscribe wire-command raises
-            # InvalidState, but the namespace listener is already removed by
-            # then, so swallow it and keep tearing down the remaining listeners.
-            with suppress(InvalidState):
-                unsubscribe_callback()
-        self._unsubscribe_callbacks = []
 
     @property
     def is_subscribed(self) -> bool:
@@ -206,14 +204,6 @@ class SonosGroup:
             # a dropped connection, a timeout: undo any status subscription made so far
             self._unsubscribe_status()
             raise
-
-    def _clear_status(self) -> None:
-        """Drop the group's status, for a group this player cannot read it from."""
-        self._volume_data = {}
-        self._playback_status_data = {}
-        self._playback_actions = PlaybackActions({})
-        self._play_modes = PlayModes({})
-        self._playback_metadata_data = {}
 
     @property
     def name(self) -> str:
@@ -311,7 +301,12 @@ class SonosGroup:
         await self.client.api.playback.pause(self.id)
 
     async def stop(self) -> None:
-        """Send stop command to group; a stop ordered during a play lands after it."""
+        """
+        Send stop command to group; a stop ordered during a play lands after it.
+
+        A session evicted meanwhile counts as stopped. Raises `CommandTimeout` when the
+        player does not answer, `InvalidState` when the group is cleaned up during the stop.
+        """
         async with self._session_lock:
             try:
                 # always first attempt to suspend the active session
@@ -440,96 +435,10 @@ class SonosGroup:
         async with self._session_lock:
             return await self._create_playback_session(app_id, app_context, account_id, custom_data)
 
-    async def _create_playback_session(
-        self,
-        app_id: str,
-        app_context: str,
-        account_id: str | None,
-        custom_data: dict | None,
-    ) -> SessionStatus:
-        """Create and subscribe to a session; the caller holds _session_lock."""
-        generation = self._cleanup_generation
-        # the new session evicts the one this group knows (in use, or stopped): an
-        # error for that one is held back until the outcome is known
-        self._replacing_session_id = self.active_session_id or self._subscribed_session_id
-        try:
-            session = await self.client.api.playback_session.create_session(
-                self.id,
-                app_id,
-                app_context,
-                account_id,
-                custom_data,
-            )
-        except BaseException:
-            self._end_session_replacement(replaced=False)
-            raise
-        session_id = session["sessionId"]
-        if self._end_session_replacement(replaced=session_id != self._replacing_session_id):
-            # the speaker handed back a session evicted meanwhile: signalled, and not
-            # handed out to play on
-            msg = f"Session {session_id} was evicted while it was created"
-            raise FailedCommand(SESSION_EVICTED_ERROR, msg)
-        if generation != self._cleanup_generation:
-            msg = f"Group {self.id} was cleaned up while session {session_id} was created"
-            raise InvalidState(msg)
-        self.active_session_id = session_id
-        self._evicted_session_id = None
-        if self._subscribed_session_id == session_id:
-            # listened to already: in use, or stopped and handed back again
-            return session
-        # the listener of another session (replaced, or stopped earlier) makes way
-        self._stop_session_listener()
-        unsubscribe: Callable[[], None] | None = None
-        try:
-            unsubscribe = await self.client.api.playback_session.subscribe(
-                session_id,
-                self._handle_session_info,
-                partial(self._handle_session_error, generation, session_id),
-            )
-        except CommandTimeout as err:
-            # the speaker may hold the subscription without anyone listening to it
-            _LOGGER.warning("No reply subscribing to session %s: %s", session_id, err)
-        except FailedCommand as err:
-            _LOGGER.debug("Could not subscribe to session %s: %s", session_id, err)
-        except BaseException:
-            # cut short (cancelled, or the connection gone): nobody listens to the
-            # session, so it is not vouched for; the next play makes a new one
-            self.active_session_id = None
-            raise
-        if generation != self._cleanup_generation or session_id == self._evicted_session_id:
-            # the group was cleaned up, or the session evicted, in the meantime: the
-            # subscription (if made) is undone and the session not handed out
-            if unsubscribe is not None:
-                with suppress(InvalidState):
-                    unsubscribe()
-            if session_id == self._evicted_session_id:
-                msg = f"Session {session_id} was evicted while it was subscribed to"
-                raise FailedCommand(SESSION_EVICTED_ERROR, msg)
-            msg = f"Group {self.id} was cleaned up while session {session_id} was subscribed to"
-            raise InvalidState(msg)
-        if unsubscribe is None:
-            # a refused subscription does not fail the session
-            return session
-        self._subscribed_session_id = session_id
-        self._unsubscribe_session = unsubscribe
-        return session
-
     async def play_stream_url(self, url: str, metadata: Container) -> None:
         """Create a new playback session and start playing a single (radio) stream URL."""
         async with self._session_lock:
             await self._play_stream_url(url, metadata)
-
-    async def _play_stream_url(self, url: str, metadata: Container) -> None:
-        """Create a session and load a stream URL into it; the caller holds _session_lock."""
-        session = await self._create_playback_session(
-            DEFAULT_APP_ID, DEFAULT_APP_CONTEXT, None, None
-        )
-        await self.client.api.playback_session.load_stream_url(
-            session["sessionId"],
-            stream_url=url,
-            play_on_completion=True,
-            station_metadata=metadata,
-        )
 
     async def play_cloud_queue(
         self,
@@ -556,17 +465,22 @@ class SonosGroup:
                     DEFAULT_APP_ID, DEFAULT_APP_CONTEXT, None, None
                 )
                 session_id = session["sessionId"]
-            await self.client.api.playback_session.load_cloud_queue(
-                session_id,
-                queue_base_url=queue_base_url,
-                http_authorization=http_authorization,
-                use_http_authorization_for_media=use_http_authorization_for_media,
-                item_id=item_id,
-                queue_version=queue_version,
-                position_millis=position_millis,
-                play_on_completion=True,
-                track_metadata=track_metadata,
-            )
+            generation = self._cleanup_generation
+            try:
+                await self.client.api.playback_session.load_cloud_queue(
+                    session_id,
+                    queue_base_url=queue_base_url,
+                    http_authorization=http_authorization,
+                    use_http_authorization_for_media=use_http_authorization_for_media,
+                    item_id=item_id,
+                    queue_version=queue_version,
+                    position_millis=position_millis,
+                    play_on_completion=True,
+                    track_metadata=track_metadata,
+                )
+            except FailedCommand as err:
+                self._handle_refused_load(generation, session_id, err)
+                raise
 
     def update_data(self, data: GroupData) -> None:
         """Update the player data."""
@@ -581,6 +495,24 @@ class SonosGroup:
                 self,
             ),
         )
+
+    def _unsubscribe_status(self) -> None:
+        """Stop the playback, volume and metadata status subscriptions (if any)."""
+        for unsubscribe_callback in self._unsubscribe_callbacks:
+            # On a closed connection the unsubscribe wire-command raises
+            # InvalidState, but the namespace listener is already removed by
+            # then, so swallow it and keep tearing down the remaining listeners.
+            with suppress(InvalidState):
+                unsubscribe_callback()
+        self._unsubscribe_callbacks = []
+
+    def _clear_status(self) -> None:
+        """Drop the group's status, for a group this player cannot read it from."""
+        self._volume_data = {}
+        self._playback_status_data = {}
+        self._playback_actions = PlaybackActions({})
+        self._play_modes = PlayModes({})
+        self._playback_metadata_data = {}
 
     def _handle_playback_status_update(self, data: PlaybackStatusData) -> None:
         """Handle playbackStatus update."""
@@ -634,6 +566,118 @@ class SonosGroup:
                 data,
             ),
         )
+
+    async def _create_playback_session(
+        self,
+        app_id: str,
+        app_context: str,
+        account_id: str | None,
+        custom_data: dict | None,
+    ) -> SessionStatus:
+        """Create and subscribe to a session; the caller holds _session_lock."""
+        generation = self._cleanup_generation
+        # the new session evicts the one this group knows (in use, or stopped): an
+        # error for that one is held back until the outcome is known
+        self._replacing_session_id = self.active_session_id or self._subscribed_session_id
+        try:
+            session = await self.client.api.playback_session.create_session(
+                self.id,
+                app_id,
+                app_context,
+                account_id,
+                custom_data,
+            )
+        except BaseException:
+            self._end_session_replacement(replaced=False)
+            raise
+        session_id = session["sessionId"]
+        if self._end_session_replacement(replaced=session_id != self._replacing_session_id):
+            # the speaker handed back a session evicted meanwhile: signalled, and not
+            # handed out to play on
+            msg = f"Session {session_id} was evicted while it was created"
+            raise FailedCommand(SESSION_EVICTED_ERROR, msg)
+        if generation != self._cleanup_generation:
+            msg = f"Group {self.id} was cleaned up while session {session_id} was created"
+            raise InvalidState(msg)
+        self.active_session_id = session_id
+        self._evicted_session_id = None
+        if self._subscribed_session_id == session_id:
+            # listened to already: in use, or stopped and handed back again
+            return session
+        # the listener of another session (replaced, or stopped earlier) makes way
+        self._stop_session_listener()
+        unsubscribe: Callable[[], None] | None = None
+        try:
+            unsubscribe = await self.client.api.playback_session.subscribe(
+                session_id,
+                self._handle_session_info,
+                partial(self._handle_session_error, generation, session_id),
+            )
+        except CommandTimeout as err:
+            # the session is used without a listener (the namespace unsubscribes in
+            # case the speaker holds the subscription anyway)
+            _LOGGER.warning("No reply subscribing to session %s: %s", session_id, err)
+        except FailedCommand as err:
+            if err.error_code == SESSION_EVICTED_ERROR:
+                # the reply says what a sessionError event would: handled as one, and the
+                # check below ends the session
+                self._handle_session_error(generation, session_id, _session_error(err))
+            else:
+                _LOGGER.debug("Could not subscribe to session %s: %s", session_id, err)
+        except BaseException:
+            # cut short (cancelled, or the connection gone): nobody listens to the
+            # session, so it is not vouched for; the next play makes a new one
+            self.active_session_id = None
+            raise
+        if generation != self._cleanup_generation or session_id == self._evicted_session_id:
+            # the group was cleaned up, or the session evicted, in the meantime: the
+            # subscription (if made) is undone and the session not handed out
+            if unsubscribe is not None:
+                with suppress(InvalidState):
+                    unsubscribe()
+            if session_id == self._evicted_session_id:
+                msg = f"Session {session_id} was evicted while it was subscribed to"
+                raise FailedCommand(SESSION_EVICTED_ERROR, msg)
+            msg = f"Group {self.id} was cleaned up while session {session_id} was subscribed to"
+            raise InvalidState(msg)
+        if unsubscribe is None:
+            # a refused subscription does not fail the session
+            return session
+        self._subscribed_session_id = session_id
+        self._unsubscribe_session = unsubscribe
+        return session
+
+    async def _play_stream_url(self, url: str, metadata: Container) -> None:
+        """Create a session and load a stream URL into it; the caller holds _session_lock."""
+        session = await self._create_playback_session(
+            DEFAULT_APP_ID, DEFAULT_APP_CONTEXT, None, None
+        )
+        generation = self._cleanup_generation
+        try:
+            await self.client.api.playback_session.load_stream_url(
+                session["sessionId"],
+                stream_url=url,
+                play_on_completion=True,
+                station_metadata=metadata,
+            )
+        except FailedCommand as err:
+            self._handle_refused_load(generation, session["sessionId"], err)
+            raise
+
+    def _handle_refused_load(self, generation: int, session_id: str, err: FailedCommand) -> None:
+        """
+        Settle a load the player refused: the session is not played into again.
+
+        An eviction in the reply counts like the sessionError event; any other refusal
+        (not an unanswered load, which may have gone through) ends the session's use,
+        so the next play makes a new one.
+        """
+        if isinstance(err, CommandTimeout):
+            return
+        if err.error_code == SESSION_EVICTED_ERROR:
+            self._handle_session_error(generation, session_id, _session_error(err))
+        else:
+            self.active_session_id = None
 
     def _end_session_replacement(self, *, replaced: bool) -> bool:
         """

@@ -30,7 +30,7 @@ def _client() -> SonosLocalApiClient:
     client._player_id = PLAYER
     client._loop = asyncio.get_running_loop()
     client.signal_event = MagicMock()
-    client.api = MagicMock()
+    client.api = MagicMock(connected=False)
     client.api.playback_session.create_session = AsyncMock(
         side_effect=[{"sessionId": "session1"}, {"sessionId": "session2"}],
     )
@@ -528,6 +528,138 @@ async def test_a_new_session_after_a_stop_replaces_the_stopped_ones_listener() -
     assert commands == ["subscribe session1", "unsubscribe session1", "subscribe session2"]
     assert group.active_session_id == "session2"
     assert group._subscribed_session_id == "session2"
+
+
+async def test_an_eviction_in_the_subscribe_reply_ends_the_session() -> None:
+    """A subscribe refused with ERROR_SESSION_EVICTED ends the session like the event would."""
+    client = _client()
+    commands = _commands(client)
+    subscribe = client.api.playback_session.subscribe.side_effect
+
+    async def _subscribe(session_id: str, *args: object) -> object:
+        if session_id == "session1":
+            raise FailedCommand("ERROR_SESSION_EVICTED", "Another user joined the session.")
+        return await subscribe(session_id, *args)
+
+    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
+    group = _group(client)
+
+    with pytest.raises(FailedCommand) as excinfo:
+        await group.create_playback_session()
+
+    assert excinfo.value.error_code == "ERROR_SESSION_EVICTED"
+    assert group.active_session_id is None
+    assert client.signal_event.call_args.args[0].data == {
+        "_objectType": "sessionError",
+        "errorCode": "ERROR_SESSION_EVICTED",
+        "reason": "Another user joined the session.",
+        "sessionId": "session1",
+    }
+    await group.create_playback_session()
+    assert group.active_session_id == "session2"
+    assert commands == ["subscribe session2"]
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [FailedCommand("ERROR_INVALID_OBJECT_ID"), FailedCommand("ERROR_SESSION_EVICTED", "gone")],
+    ids=["invalid-id", "evicted"],
+)
+async def test_a_queue_refused_for_a_session_ends_its_use(refusal: FailedCommand) -> None:
+    """A load the player refuses drops the session, so the next play makes a new one."""
+    client = _client()
+    client.api.playback_session.subscribe = AsyncMock(
+        side_effect=FailedCommand("ERROR_UNSUPPORTED_COMMAND"),
+    )
+    client.api.playback_session.load_cloud_queue = AsyncMock(side_effect=[refusal, None])
+    group = _group(client)
+    await group.create_playback_session()
+    assert group.active_session_id == "session1"
+
+    with pytest.raises(FailedCommand):
+        await group.play_cloud_queue("https://queue")
+
+    assert group.active_session_id is None
+    assert client.signal_event.called is (refusal.error_code == "ERROR_SESSION_EVICTED")
+    await group.play_cloud_queue("https://queue")
+    assert group.active_session_id == "session2"
+    assert client.api.playback_session.load_cloud_queue.await_args.args[0] == "session2"
+
+
+async def test_a_queue_left_unanswered_keeps_its_session() -> None:
+    """A load without reply may have gone through: the session stays in use."""
+    client = _client()
+    client.api.playback_session.load_cloud_queue = AsyncMock(
+        side_effect=CommandTimeout("playbackSession:loadCloudQueue", 10),
+    )
+    group = _group(client)
+
+    with pytest.raises(CommandTimeout):
+        await group.play_cloud_queue("https://queue")
+
+    assert group.active_session_id == "session1"
+
+
+async def test_a_stream_refused_for_a_session_ends_its_use() -> None:
+    """A stream URL the player refuses drops the session like a refused queue."""
+    client = _client()
+    client.api.playback_session.load_stream_url = AsyncMock(
+        side_effect=FailedCommand("ERROR_INVALID_OBJECT_ID"),
+    )
+    group = _group(client)
+
+    with pytest.raises(FailedCommand):
+        await group.play_stream_url("https://stream", None)  # type: ignore[arg-type]
+
+    assert group.active_session_id is None
+
+
+async def test_a_new_connection_closes_the_one_still_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """connect() on a client still connected closes that connection first."""
+    client = _client()
+    old_api = client.api
+    old_api.connected = True
+    old_api.disconnect = AsyncMock()
+    discovery = {"playerId": PLAYER, "householdId": "household1", "websocketUrl": "wss://host"}
+    monkeypatch.setattr("aiosonos.client.get_discovery_info", AsyncMock(return_value=discovery))
+    new_api = MagicMock()
+    new_api.connect = AsyncMock()
+    monkeypatch.setattr("aiosonos.client.SonosLocalWebSocketsApi", MagicMock(return_value=new_api))
+
+    await client.connect()
+
+    old_api.disconnect.assert_awaited_once()
+    assert client.api is new_api
+
+
+async def test_connections_made_together_leave_one_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two connect() calls at once make one connection after the other; one stays open."""
+    client = _client()
+    discovery = {"playerId": PLAYER, "householdId": "household1", "websocketUrl": "wss://host"}
+    monkeypatch.setattr("aiosonos.client.get_discovery_info", AsyncMock(return_value=discovery))
+    apis: list[MagicMock] = []
+
+    def _api(*_: object) -> MagicMock:
+        api = MagicMock(connected=False)
+
+        async def _connect() -> None:
+            await asyncio.sleep(0)
+            api.connected = True
+
+        async def _disconnect() -> None:
+            api.connected = False
+
+        api.connect = AsyncMock(side_effect=_connect)
+        api.disconnect = AsyncMock(side_effect=_disconnect)
+        apis.append(api)
+        return api
+
+    monkeypatch.setattr("aiosonos.client.SonosLocalWebSocketsApi", _api)
+
+    await asyncio.gather(client.connect(), client.connect())
+
+    assert [api.connected for api in apis] == [False, True]
+    assert client.api is apis[1]
 
 
 async def test_an_eviction_while_subscribing_is_not_lost() -> None:

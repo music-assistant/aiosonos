@@ -7,10 +7,11 @@ import logging
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, Mock, call
 
+import orjson
 import pytest
 
 from aiosonos.api import SonosLocalWebSocketsApi
-from aiosonos.exceptions import FailedCommand
+from aiosonos.exceptions import CommandTimeout, FailedCommand, InvalidState
 
 if TYPE_CHECKING:
     from aiosonos.api.namespaces._base import UnsubscribeCallbackType
@@ -389,8 +390,9 @@ async def test_replies_in_reverse_order_leave_the_newest_subscription_in_charge(
     assert "session1" not in api.playback_session._subscriptions
 
 
-async def test_a_subscription_given_up_while_replaced_is_not_handed_back() -> None:
-    """A subscribe that fails does not revive the one it replaced if that one was stopped."""
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_a_subscription_given_up_while_replaced_is_not_handed_back(cancelled: bool) -> None:
+    """A subscribe that fails does not revive the stopped one it replaced; it releases its hold."""
     api = _api()
     _answer_commands(api)
     older_callback = Mock()
@@ -400,17 +402,175 @@ async def test_a_subscription_given_up_while_replaced_is_not_handed_back() -> No
     await asyncio.sleep(0)
 
     unsubscribe_older()
+    # the speaker's subscription serves the newer call for now
     commands.assert_not_called()
-    replies[0].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
-    with pytest.raises(FailedCommand):
+    if cancelled:
+        newer.cancel()
+    else:
+        replies[0].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
+    with pytest.raises(asyncio.CancelledError if cancelled else FailedCommand):
         await newer
 
     assert "session1" not in api.playback_session._subscriptions
+    # nobody listens: the subscription the older call made is released after all
+    commands.assert_called_once_with(
+        namespace="playbackSession", command="unsubscribe", sessionId="session1"
+    )
     api._handle_incoming_message(
         ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
     )
     await _drain()
     older_callback.assert_not_called()
+
+
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("cancelled", [False, True], ids=["unanswered", "cancelled"])
+async def test_an_unanswered_subscribe_releases_what_the_speaker_may_hold(
+    held: bool, cancelled: bool
+) -> None:
+    """A subscribe without reply, or cancelled, unsubscribes in case it went through."""
+    api = _api()
+    _answer_commands(api)
+    if held:
+        await api.playback_session.subscribe("session1", Mock())
+    replies, commands = _hold_replies(api)
+    pending = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
+    await asyncio.sleep(0)
+
+    if cancelled:
+        pending.cancel()
+    else:
+        replies[0].set_exception(CommandTimeout("playbackSession:subscribe", 10))
+    with pytest.raises(asyncio.CancelledError if cancelled else CommandTimeout):
+        await pending
+
+    assert ("session1" in api.playback_session._subscriptions) is held
+    if held:
+        # the one holding the id keeps the speaker's subscription
+        commands.assert_not_called()
+    else:
+        commands.assert_called_once_with(
+            namespace="playbackSession", command="unsubscribe", sessionId="session1"
+        )
+
+
+async def test_a_subscribe_cut_off_while_replaced_is_released_by_its_replacement() -> None:
+    """A newer call that fails releases what a cancelled older call may have got."""
+    api = _api()
+    replies, commands = _hold_replies(api)
+    older = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
+    await asyncio.sleep(0)
+    newer = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
+    await asyncio.sleep(0)
+
+    older.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await older
+    commands.assert_not_called()
+    replies[1].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
+    with pytest.raises(FailedCommand):
+        await newer
+
+    assert "session1" not in api.playback_session._subscriptions
+    commands.assert_called_once_with(
+        namespace="playbackSession", command="unsubscribe", sessionId="session1"
+    )
+
+
+async def test_a_command_on_a_connection_closed_meanwhile_leaves_no_future() -> None:
+    """A command sent after a no-wait one finds the connection gone: InvalidState, no future."""
+    api = _api()
+    api._ws_client = MagicMock(closed=False)
+
+    async def _send_bytes(_raw: bytes) -> None:
+        api._ws_client.closed = True
+
+    api._ws_client.send_bytes = _send_bytes
+    api.send_command_no_wait("playbackSession", "unsubscribe", sessionId="session1")
+    with pytest.raises(InvalidState):
+        await api.send_command("playbackSession", "subscribe", sessionId="session2")
+
+    assert api._result_futures == {}
+
+
+async def test_a_command_whose_frame_cannot_be_written_leaves_no_future() -> None:
+    """A command the socket will not take is not left waiting for a reply."""
+    api = _api()
+    api._ws_client = MagicMock(closed=False)
+    api._ws_client.send_bytes = AsyncMock(side_effect=ConnectionResetError)
+
+    with pytest.raises(ConnectionResetError):
+        await api.send_command("playbackSession", "subscribe", sessionId="session1")
+
+    assert api._result_futures == {}
+
+
+@pytest.mark.parametrize("cancelled", [False, True], ids=["unanswered", "cancelled"])
+async def test_a_subscribe_handed_back_to_a_call_that_is_refused_is_released(
+    cancelled: bool,
+) -> None:
+    """What a cut-off call may hold passes to the call it hands the id back to."""
+    api = _api()
+    replies, commands = _hold_replies(api)
+    older = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
+    await asyncio.sleep(0)
+    newer = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
+    await asyncio.sleep(0)
+
+    if cancelled:
+        newer.cancel()
+    else:
+        replies[1].set_exception(CommandTimeout("playbackSession:subscribe", 10))
+    with pytest.raises(asyncio.CancelledError if cancelled else CommandTimeout):
+        await newer
+    # the older call holds the id again, and with it what the newer one may have got
+    commands.assert_not_called()
+    replies[0].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
+    with pytest.raises(FailedCommand):
+        await older
+
+    assert "session1" not in api.playback_session._subscriptions
+    commands.assert_called_once_with(
+        namespace="playbackSession", command="unsubscribe", sessionId="session1"
+    )
+
+
+async def test_a_command_goes_out_after_the_commands_sent_without_waiting_before_it() -> None:
+    """A command awaited for its reply does not overtake one sent without waiting just before."""
+    api = _api()
+    frames: list[str] = []
+    api._ws_client = MagicMock(closed=False)
+
+    async def _send_bytes(raw: bytes) -> None:
+        header = orjson.loads(raw)[0]
+        frames.append(f"{header['command']} {header['sessionId']}")
+        if header["command"] == "subscribe":
+            api._result_futures[header["cmdId"]].set_result({})
+
+    api._ws_client.send_bytes = _send_bytes
+    api.send_command_no_wait("playbackSession", "unsubscribe", sessionId="session1")
+    await api.send_command("playbackSession", "subscribe", sessionId="session2")
+
+    assert frames == ["unsubscribe session1", "subscribe session2"]
+
+
+async def test_releasing_a_given_up_subscription_on_a_dead_connection_keeps_the_failure() -> None:
+    """The unsubscribe sent for a given-up subscription does not mask why the subscribe failed."""
+    api = _api()
+    _answer_commands(api)
+    unsubscribe_older = await api.playback_session.subscribe("session1", Mock())
+    replies, commands = _hold_replies(api)
+    newer = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
+    await asyncio.sleep(0)
+
+    unsubscribe_older()
+    commands.side_effect = InvalidState("Not connected")
+    replies[0].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
+    with pytest.raises(FailedCommand):
+        await newer
+
+    commands.assert_called_once()
+    assert "session1" not in api.playback_session._subscriptions
 
 
 @pytest.mark.parametrize("held", [False, True])
@@ -421,7 +581,7 @@ async def test_a_cancelled_subscribe_leaves_the_session_as_it_was(held: bool) ->
     holder = Mock()
     if held:
         await api.playback_session.subscribe("session1", holder)
-    _hold_replies(api)
+    _, commands = _hold_replies(api)
     cancelled_callback = Mock()
     pending = asyncio.ensure_future(api.playback_session.subscribe("session1", cancelled_callback))
     await asyncio.sleep(0)
@@ -431,6 +591,8 @@ async def test_a_cancelled_subscribe_leaves_the_session_as_it_was(held: bool) ->
         await pending
 
     assert ("session1" in api.playback_session._subscriptions) is held
+    # the speaker may have taken the subscribe: released unless the holder keeps it
+    assert commands.call_count == (0 if held else 1)
     api._handle_incoming_message(
         ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
     )
@@ -442,7 +604,7 @@ async def test_a_cancelled_subscribe_leaves_the_session_as_it_was(held: bool) ->
 async def test_two_refused_subscribes_in_flight_leave_no_subscription() -> None:
     """A failed subscribe does not hand the session back to one that failed as well."""
     api = _api()
-    replies, _ = _hold_replies(api)
+    replies, commands = _hold_replies(api)
     older_callback, newer_callback = Mock(), Mock()
     older = asyncio.ensure_future(api.playback_session.subscribe("session1", older_callback))
     await asyncio.sleep(0)
@@ -457,6 +619,8 @@ async def test_two_refused_subscribes_in_flight_leave_no_subscription() -> None:
         await newer
 
     assert "session1" not in api.playback_session._subscriptions
+    # the speaker accepted neither: nothing to release
+    commands.assert_not_called()
     api._handle_incoming_message(
         ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
     )
