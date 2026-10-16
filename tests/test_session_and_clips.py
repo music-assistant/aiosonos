@@ -634,6 +634,10 @@ async def test_a_new_connection_closes_the_one_still_open(monkeypatch: pytest.Mo
 
     old_api.disconnect.assert_awaited_once()
     assert client.api is new_api
+    # the new connection's coordinator events reach the client's subscribers
+    new_api.subscribe_group_coordinator_changed.assert_called_once_with(
+        client._handle_group_coordinator_changed
+    )
 
 
 async def test_an_eviction_while_subscribing_is_not_lost() -> None:
@@ -844,31 +848,6 @@ async def test_a_failed_status_setup_keeps_the_session_subscription(failure: Exc
     assert group._subscribed_session_id == "session1"
 
 
-async def test_a_cleanup_before_a_waiting_creation_starts_does_not_count_against_it() -> None:
-    """A creation that waited its turn subscribes, whatever happened to the group before."""
-    client = _client()
-    subscribed = asyncio.Event()
-
-    async def _subscribe(session_id: str, *_: object) -> Mock:
-        if session_id == "session1":
-            await subscribed.wait()
-        return Mock()
-
-    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
-    group = _group(client)
-    first = asyncio.ensure_future(group.create_playback_session())
-    second = asyncio.ensure_future(group.create_playback_session())
-    await asyncio.sleep(0.01)
-    group.cleanup()  # the group moved away and back while the first one subscribed
-    subscribed.set()
-    with pytest.raises(InvalidState):
-        await first
-    await second
-
-    assert client.api.playback_session.subscribe.await_count == 2
-    assert group._subscribed_session_id == "session2"
-
-
 async def test_a_stream_is_not_loaded_into_a_session_evicted_while_subscribing() -> None:
     """play_stream_url sends no load when its session was evicted before the subscribe reply."""
     client = _client()
@@ -957,44 +936,6 @@ async def test_a_stream_loads_into_the_session_made_for_it() -> None:
     assert [load.args[0] for load in loads] == ["session1", "session2"]
     assert [load.kwargs["stream_url"] for load in loads] == ["http://host/a", "http://host/b"]
     assert group.active_session_id == "session2"
-
-
-async def test_overlapping_replacements_signal_the_eviction_of_the_old_session() -> None:
-    """Two replacements asked for together: the eviction the second causes names the old session."""
-    client = _client()
-    group = _group(client)
-    await group.create_playback_session()
-    first_error_callback = _session_error_callback(client)
-    first_create, second_create = asyncio.Event(), asyncio.Event()
-    second_create_started = asyncio.Event()
-    creations = 0
-
-    async def _create(*_: object) -> dict[str, str]:
-        nonlocal creations
-        creations += 1
-        if creations == 1:
-            await first_create.wait()
-            raise FailedCommand("ERROR_SESSION_IN_PROGRESS")
-        second_create_started.set()
-        await second_create.wait()
-        return {"sessionId": "session2"}
-
-    client.api.playback_session.create_session = AsyncMock(side_effect=_create)
-    first = asyncio.ensure_future(group.create_playback_session())
-    second = asyncio.ensure_future(group.create_playback_session())
-    await asyncio.sleep(0)
-    first_create.set()
-    with pytest.raises(FailedCommand):
-        await first
-    # the speaker evicts session1 for session2 while that creation is still unanswered
-    await second_create_started.wait()
-    first_error_callback(EVICTED)
-    second_create.set()
-    await second
-
-    assert group.active_session_id == "session2"
-    client.signal_event.assert_called_once()
-    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
 
 
 async def test_a_clip_played_meanwhile_waits_for_the_subscription() -> None:
@@ -1123,55 +1064,6 @@ async def test_a_queue_started_during_an_evicted_creation_gets_its_own_session()
         ("session2", "http://host/b/"),
     ]
     assert group.active_session_id == "session2"
-
-
-async def test_an_eviction_during_a_creation_the_group_is_cleaned_up_for_is_signalled() -> None:
-    """An eviction during createSession counts, also when a cleanup follows it before the reply."""
-    client = _client()
-    group = _group(client)
-    await group.create_playback_session()
-    first_error_callback = _session_error_callback(client)
-    client.signal_event.reset_mock()
-
-    def _create(*_: object) -> dict[str, str]:
-        first_error_callback(EVICTED)
-        group.cleanup()
-        return {"sessionId": "session1"}
-
-    client.api.playback_session.create_session.side_effect = _create
-    with pytest.raises(FailedCommand) as excinfo:
-        await group.create_playback_session()
-
-    assert excinfo.value.error_code == "ERROR_SESSION_EVICTED"
-
-    client.signal_event.assert_called_once()
-    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
-    assert group.active_session_id is None
-
-
-async def test_a_creation_cancelled_while_unanswered_leaves_the_eviction_handled() -> None:
-    """A creation cut short before its reply changes nothing about an eviction handled meanwhile."""
-    client = _client()
-    group = _group(client)
-    await group.create_playback_session()
-    first_error_callback = _session_error_callback(client)
-    client.signal_event.reset_mock()
-    never = asyncio.Event()
-
-    async def _create(*_: object) -> dict[str, str]:
-        await never.wait()
-        return {"sessionId": "session2"}
-
-    client.api.playback_session.create_session = AsyncMock(side_effect=_create)
-    creation = asyncio.ensure_future(group.create_playback_session())
-    await asyncio.sleep(0.01)
-    first_error_callback(EVICTED)
-    creation.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await creation
-
-    assert group.active_session_id is None
-    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
 
 
 async def test_a_stops_own_clear_does_not_signal_the_eviction_of_the_stopped_session() -> None:

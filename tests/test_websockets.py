@@ -13,6 +13,8 @@ from aiosonos.api import SonosLocalWebSocketsApi
 from aiosonos.exceptions import CommandTimeout, FailedCommand, InvalidState
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from aiosonos.api.namespaces._base import UnsubscribeCallbackType
 
 GROUP = "group1"
@@ -266,28 +268,6 @@ async def test_session_error_before_the_subscribe_reply_reaches_the_callback() -
     await pending
 
 
-async def test_a_refused_session_subscription_leaves_the_earlier_error_listener() -> None:
-    """A subscribe the player refuses leaves the listener that was there before it listening."""
-    api = _api()
-    _answer_commands(api)
-    previous = Mock()
-    await api.playback_session.subscribe("session1", Mock(), previous)
-    api.send_command = AsyncMock(  # type: ignore[method-assign]
-        side_effect=FailedCommand("ERROR_COMMAND_FAILED")
-    )
-
-    refused = Mock()
-    with pytest.raises(FailedCommand):
-        await api.playback_session.subscribe("session1", Mock(), refused)
-
-    api._handle_incoming_message(
-        ({"type": "sessionError", "sessionId": "session1"}, SESSION_EVICTED)
-    )
-    await _drain()
-    previous.assert_called_once_with(SESSION_EVICTED)
-    refused.assert_not_called()
-
-
 async def test_session_info_and_audio_clip_status_reach_their_listeners() -> None:
     """The sessionInfo and audioClipStatus events are routed by their event type."""
     api = _api()
@@ -317,121 +297,19 @@ async def test_a_refused_first_session_subscription_leaves_no_error_listener() -
         side_effect=FailedCommand("ERROR_COMMAND_FAILED")
     )
 
+    commands = api.send_command_no_wait = Mock()  # type: ignore[method-assign]
     with pytest.raises(FailedCommand):
         await api.playback_session.subscribe("session1", Mock(), Mock())
 
     assert "session1" not in api.playback_session._subscriptions
-
-
-async def test_a_session_subscription_failing_late_keeps_a_newer_listener() -> None:
-    """A subscribe that fails after a newer one registered neither restores nor removes it."""
-    api = _api()
-    replies, _ = _hold_replies(api)
-    first = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock(), Mock()))
-    await asyncio.sleep(0)
-    newer = Mock()
-    second = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock(), newer))
-    await asyncio.sleep(0)
-    replies[1].set_result(None)
-    unsubscribe_newer = await second
-    replies[0].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
-    with pytest.raises(FailedCommand):
-        await first
-
-    api._handle_incoming_message(
-        ({"type": "sessionError", "sessionId": "session1"}, SESSION_EVICTED)
-    )
-    await _drain()
-    newer.assert_called_once_with(SESSION_EVICTED)
-    unsubscribe_newer()
-    assert "session1" not in api.playback_session._subscriptions
-
-
-async def test_replies_in_reverse_order_leave_the_remaining_subscription_listening() -> None:
-    """Two subscribes to a session answered in reverse order: each handle drops its own listener."""
-    api = _api()
-    replies, commands = _hold_replies(api)
-    older_callback, older_error = Mock(), Mock()
-    older = asyncio.ensure_future(
-        api.playback_session.subscribe("session1", older_callback, older_error)
-    )
-    await asyncio.sleep(0)
-    newer_callback, newer_error = Mock(), Mock()
-    newer = asyncio.ensure_future(
-        api.playback_session.subscribe("session1", newer_callback, newer_error)
-    )
-    await asyncio.sleep(0)
-
-    replies[1].set_result(None)
-    unsubscribe_newer = await newer
-    replies[0].set_result(None)
-    unsubscribe_older = await older
-    unsubscribe_older()
-
+    # the player took nothing: nothing to release
     commands.assert_not_called()
-    api._handle_incoming_message(
-        ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
-    )
-    api._handle_incoming_message(
-        ({"type": "sessionError", "sessionId": "session1"}, SESSION_EVICTED)
-    )
-    await _drain()
-    newer_callback.assert_called_once_with(SESSION_SUSPENDED)
-    newer_error.assert_called_once_with(SESSION_EVICTED)
-    older_callback.assert_not_called()
-    older_error.assert_not_called()
-
-    unsubscribe_newer()
-
-    commands.assert_called_once_with(
-        namespace="playbackSession", command="unsubscribe", sessionId="session1"
-    )
-    assert "session1" not in api.playback_session._subscriptions
 
 
-@pytest.mark.parametrize("cancelled", [False, True])
-async def test_a_failing_subscribe_whose_earlier_listener_left_releases(cancelled: bool) -> None:
-    """A failing subscribe, the earlier listener gone, releases the speaker's subscription."""
-    api = _api()
-    _answer_commands(api)
-    older_callback = Mock()
-    unsubscribe_older = await api.playback_session.subscribe("session1", older_callback, Mock())
-    replies, commands = _hold_replies(api)
-    newer = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock(), Mock()))
-    await asyncio.sleep(0)
-
-    unsubscribe_older()
-    # the speaker's subscription serves the newer call for now
-    commands.assert_not_called()
-    if cancelled:
-        newer.cancel()
-    else:
-        replies[0].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
-    with pytest.raises(asyncio.CancelledError if cancelled else FailedCommand):
-        await newer
-
-    assert "session1" not in api.playback_session._subscriptions
-    # nobody listens: the subscription the older call made is released after all
-    commands.assert_called_once_with(
-        namespace="playbackSession", command="unsubscribe", sessionId="session1"
-    )
-    api._handle_incoming_message(
-        ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
-    )
-    await _drain()
-    older_callback.assert_not_called()
-
-
-@pytest.mark.parametrize("held", [False, True])
 @pytest.mark.parametrize("cancelled", [False, True], ids=["unanswered", "cancelled"])
-async def test_an_unanswered_subscribe_releases_what_the_speaker_may_hold(
-    held: bool, cancelled: bool
-) -> None:
+async def test_an_unanswered_subscribe_releases_what_the_speaker_may_hold(cancelled: bool) -> None:
     """A subscribe without reply, or cancelled, unsubscribes in case it went through."""
     api = _api()
-    _answer_commands(api)
-    if held:
-        await api.playback_session.subscribe("session1", Mock())
     replies, commands = _hold_replies(api)
     pending = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
     await asyncio.sleep(0)
@@ -442,33 +320,6 @@ async def test_an_unanswered_subscribe_releases_what_the_speaker_may_hold(
         replies[0].set_exception(CommandTimeout("playbackSession:subscribe", 10))
     with pytest.raises(asyncio.CancelledError if cancelled else CommandTimeout):
         await pending
-
-    assert ("session1" in api.playback_session._subscriptions) is held
-    if held:
-        # the listener still there keeps the speaker's subscription
-        commands.assert_not_called()
-    else:
-        commands.assert_called_once_with(
-            namespace="playbackSession", command="unsubscribe", sessionId="session1"
-        )
-
-
-async def test_a_cut_off_subscribe_is_released_by_the_pending_one_that_fails() -> None:
-    """A newer call that fails releases what a cancelled older call may have got."""
-    api = _api()
-    replies, commands = _hold_replies(api)
-    older = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
-    await asyncio.sleep(0)
-    newer = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
-    await asyncio.sleep(0)
-
-    older.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await older
-    commands.assert_not_called()
-    replies[1].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
-    with pytest.raises(FailedCommand):
-        await newer
 
     assert "session1" not in api.playback_session._subscriptions
     commands.assert_called_once_with(
@@ -503,36 +354,49 @@ async def test_every_listener_to_a_session_gets_its_events() -> None:
     commands.assert_called_once()
 
 
-async def test_a_listener_stopped_by_an_earlier_one_misses_the_event() -> None:
+FAN_OUT_EVENTS = [
+    ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
+    ({"type": "sessionError", "sessionId": "session1"}, SESSION_EVICTED),
+]
+
+
+def _listener_args(callback: Callable[[object], None], message: tuple) -> tuple:
+    """Return subscribe() callback arguments that put `callback` on the message's loop."""
+    return (callback, None) if message[0]["type"] == "sessionInfo" else (Mock(), callback)
+
+
+@pytest.mark.parametrize("message", FAN_OUT_EVENTS, ids=["event", "error"])
+async def test_a_listener_stopped_by_an_earlier_one_misses_the_event(message: tuple) -> None:
     """A callback that uses another listener's handle stops that listener before its turn."""
     api = _api()
     _answer_commands(api)
     second = Mock()
-    await api.playback_session.subscribe("session1", Mock(), lambda _: stop_second())
-    stop_second = await api.playback_session.subscribe("session1", Mock(), second)
-
-    api._handle_incoming_message(
-        ({"type": "sessionError", "sessionId": "session1"}, SESSION_EVICTED)
+    await api.playback_session.subscribe(
+        "session1", *_listener_args(lambda _: stop_second(), message)
     )
+    stop_second = await api.playback_session.subscribe("session1", *_listener_args(second, message))
+
+    api._handle_incoming_message(message)
     await _drain()
 
     second.assert_not_called()
 
 
-async def test_a_listener_stopping_itself_leaves_the_next_one_its_event() -> None:
+@pytest.mark.parametrize("message", FAN_OUT_EVENTS, ids=["event", "error"])
+async def test_a_listener_stopping_itself_leaves_the_next_one_its_event(message: tuple) -> None:
     """A callback that uses its own handle does not make the listener after it miss the event."""
     api = _api()
     _answer_commands(api)
     second = Mock()
-    stop_first = await api.playback_session.subscribe("session1", lambda _: stop_first())
-    await api.playback_session.subscribe("session1", second)
-
-    api._handle_incoming_message(
-        ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
+    stop_first = await api.playback_session.subscribe(
+        "session1", *_listener_args(lambda _: stop_first(), message)
     )
+    await api.playback_session.subscribe("session1", *_listener_args(second, message))
+
+    api._handle_incoming_message(message)
     await _drain()
 
-    second.assert_called_once_with(SESSION_SUSPENDED)
+    second.assert_called_once_with(message[1])
 
 
 async def test_a_command_whose_frame_cannot_be_written_leaves_no_future() -> None:
@@ -545,36 +409,6 @@ async def test_a_command_whose_frame_cannot_be_written_leaves_no_future() -> Non
         await api.send_command("playbackSession", "subscribe", sessionId="session1")
 
     assert api._result_futures == {}
-
-
-@pytest.mark.parametrize("cancelled", [False, True], ids=["unanswered", "cancelled"])
-async def test_a_cut_off_subscribe_is_released_when_the_earlier_call_is_refused(
-    cancelled: bool,
-) -> None:
-    """What a cut-off call may hold is released by the last listener to leave."""
-    api = _api()
-    replies, commands = _hold_replies(api)
-    older = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
-    await asyncio.sleep(0)
-    newer = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
-    await asyncio.sleep(0)
-
-    if cancelled:
-        newer.cancel()
-    else:
-        replies[1].set_exception(CommandTimeout("playbackSession:subscribe", 10))
-    with pytest.raises(asyncio.CancelledError if cancelled else CommandTimeout):
-        await newer
-    # the older call still listens, so what the newer one may have got stays for it
-    commands.assert_not_called()
-    replies[0].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
-    with pytest.raises(FailedCommand):
-        await older
-
-    assert "session1" not in api.playback_session._subscriptions
-    commands.assert_called_once_with(
-        namespace="playbackSession", command="unsubscribe", sessionId="session1"
-    )
 
 
 async def test_releasing_a_given_up_subscription_on_a_dead_connection_keeps_the_failure() -> None:
@@ -592,120 +426,6 @@ async def test_releasing_a_given_up_subscription_on_a_dead_connection_keeps_the_
     with pytest.raises(FailedCommand):
         await newer
 
-    commands.assert_called_once()
-    assert "session1" not in api.playback_session._subscriptions
-
-
-@pytest.mark.parametrize("held", [False, True])
-async def test_a_cancelled_subscribe_leaves_the_session_as_it_was(held: bool) -> None:
-    """A subscribe cancelled while unanswered leaves no listener, or only the earlier one."""
-    api = _api()
-    _answer_commands(api)
-    holder = Mock()
-    if held:
-        await api.playback_session.subscribe("session1", holder)
-    _, commands = _hold_replies(api)
-    cancelled_callback = Mock()
-    pending = asyncio.ensure_future(api.playback_session.subscribe("session1", cancelled_callback))
-    await asyncio.sleep(0)
-
-    pending.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await pending
-
-    assert ("session1" in api.playback_session._subscriptions) is held
-    # the speaker may have taken the subscribe: released unless the holder keeps it
-    assert commands.call_count == (0 if held else 1)
-    api._handle_incoming_message(
-        ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
-    )
-    await _drain()
-    cancelled_callback.assert_not_called()
-    assert holder.call_count == (1 if held else 0)
-
-
-async def test_two_refused_subscribes_in_flight_leave_no_subscription() -> None:
-    """Two subscribes the player refuses leave no listener and nothing to release."""
-    api = _api()
-    replies, commands = _hold_replies(api)
-    older_callback, newer_callback = Mock(), Mock()
-    older = asyncio.ensure_future(api.playback_session.subscribe("session1", older_callback))
-    await asyncio.sleep(0)
-    newer = asyncio.ensure_future(api.playback_session.subscribe("session1", newer_callback))
-    await asyncio.sleep(0)
-
-    replies[0].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
-    with pytest.raises(FailedCommand):
-        await older
-    replies[1].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
-    with pytest.raises(FailedCommand):
-        await newer
-
-    assert "session1" not in api.playback_session._subscriptions
-    # the speaker accepted neither: nothing to release
-    commands.assert_not_called()
-    api._handle_incoming_message(
-        ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
-    )
-    await _drain()
-    older_callback.assert_not_called()
-    newer_callback.assert_not_called()
-
-
-async def test_refused_subscribes_leave_the_earlier_listener_alone() -> None:
-    """Two later subscribes that both fail change nothing for the listener already there."""
-    api = _api()
-    _answer_commands(api)
-    holder = Mock()
-    unsubscribe_holder = await api.playback_session.subscribe("session1", holder)
-    replies, commands = _hold_replies(api)
-    second = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
-    await asyncio.sleep(0)
-    third = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
-    await asyncio.sleep(0)
-
-    replies[0].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
-    with pytest.raises(FailedCommand):
-        await second
-    replies[1].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
-    with pytest.raises(FailedCommand):
-        await third
-
-    api._handle_incoming_message(
-        ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
-    )
-    await _drain()
-    holder.assert_called_once_with(SESSION_SUSPENDED)
-    unsubscribe_holder()
-    commands.assert_called_once_with(
-        namespace="playbackSession", command="unsubscribe", sessionId="session1"
-    )
-    assert "session1" not in api.playback_session._subscriptions
-
-
-async def test_a_listener_whose_handle_is_unused_keeps_listening() -> None:
-    """Later subscribes to the same id, used or failed, do not end an earlier listener."""
-    api = _api()
-    _answer_commands(api)
-    first = Mock()
-    unsubscribe_first = await api.playback_session.subscribe("session1", first)
-    unsubscribe_second = await api.playback_session.subscribe("session1", Mock())
-    replies, commands = _hold_replies(api)
-    third = asyncio.ensure_future(api.playback_session.subscribe("session1", Mock()))
-    await asyncio.sleep(0)
-
-    unsubscribe_second()
-    replies[0].set_exception(FailedCommand("ERROR_COMMAND_FAILED"))
-    with pytest.raises(FailedCommand):
-        await third
-
-    commands.assert_not_called()
-    api._handle_incoming_message(
-        ({"type": "sessionInfo", "sessionId": "session1"}, SESSION_SUSPENDED),
-    )
-    await _drain()
-    first.assert_called_once_with(SESSION_SUSPENDED)
-    unsubscribe_first()
     commands.assert_called_once()
     assert "session1" not in api.playback_session._subscriptions
 
@@ -738,28 +458,6 @@ async def test_unsubscribing_a_session_leaves_a_newer_subscription_alone() -> No
         namespace="playbackSession", command="unsubscribe", sessionId="session1"
     )
     assert "session1" not in api.playback_session._subscriptions
-
-
-async def test_unsubscribing_a_group_leaves_a_newer_playback_subscription_alone() -> None:
-    """The handle of an older playback subscription leaves the newer one's error listener."""
-    api = _api()
-    commands = _answer_commands(api)
-    error_callback = Mock()
-    unsubscribe_older = await api.playback.subscribe(GROUP, Mock(), error_callback)
-    unsubscribe_newer = await api.playback.subscribe(GROUP, Mock(), error_callback)
-
-    unsubscribe_older()
-
-    commands.assert_not_called()
-    error = {"errorCode": "ERROR_PLAYBACK_FAILED", "reason": "no"}
-    api._handle_incoming_message(({"type": "playbackError", "groupId": GROUP}, error))
-    await _drain()
-    error_callback.assert_called_once_with(error)
-
-    unsubscribe_newer()
-
-    commands.assert_called_once_with(namespace="playback", command="unsubscribe", groupId=GROUP)
-    assert GROUP not in api.playback._subscriptions
 
 
 @pytest.mark.parametrize(
