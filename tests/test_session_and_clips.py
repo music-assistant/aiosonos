@@ -1191,6 +1191,25 @@ async def test_a_queue_started_during_an_evicted_creation_gets_its_own_session()
     assert group.active_session_id == "session2"
 
 
+async def test_an_evicted_suspend_reply_ends_the_stop_also_after_a_cleanup() -> None:
+    """The group cleaned up during the suspend, the evicted reply still ends the stop: no clear."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    client.api.playback_session.load_stream_url = AsyncMock()
+
+    async def _suspend(*_: object) -> None:
+        group.cleanup()
+        raise FailedCommand(EVICTED["errorCode"])
+
+    client.api.playback_session.suspend = AsyncMock(side_effect=_suspend)
+    await group.stop()
+
+    client.api.playback_session.create_session.assert_awaited_once()
+    client.api.playback_session.load_stream_url.assert_not_awaited()
+    assert group.active_session_id is None
+
+
 async def test_a_stop_whose_suspend_reply_says_evicted_loads_nothing() -> None:
     """An eviction in the suspend reply ends the stop: no clear session takes the group back."""
     client = _client()
