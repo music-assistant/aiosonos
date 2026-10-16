@@ -250,9 +250,8 @@ class SonosLocalApiClient:
             # same group_id is delivered before the task gets a chance to run,
             # we want that second event to take the update_data() branch above
             # rather than queue a duplicate _setup_group task. Two concurrent
-            # setups would each call .subscribe() for the same id and the
-            # second one would overwrite the first listener, leaving the group
-            # with no working callbacks.
+            # setups would each subscribe to the same ids and the group would
+            # get every event twice.
             self._groups[group_data["id"]] = SonosGroup(self, group_data)
             self._schedule_group_setup(group_data)
         # check if any groups are removed

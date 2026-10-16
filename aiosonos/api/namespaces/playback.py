@@ -268,8 +268,8 @@ class PlaybackNameSpace(SonosNameSpace):
         The optional error_callback receives playbackError events,
         sent when the group fails to play an item.
 
-        Returns handle to unsubscribe; a no-op once used, or once a newer
-        subscription to the group replaced this one.
+        Returns handle that stops this call's listener (a no-op once used); the
+        player's subscription is released when the last listener to the group stops.
 
         Reference:
         https://docs.sonos.com/reference/playback-subscribe-groupid
