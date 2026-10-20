@@ -32,7 +32,7 @@ test = [
   "pytest==9.1.1",
   "pytest-aiohttp==1.1.1",
   "pytest-cov==7.1.0",
-  "ruff==0.15.17",
+  "ruff==0.17.1",
 ]
 
 [tool.setuptools]
@@ -139,6 +139,7 @@ ignore = [
   "TD004", # Just annoying, not really useful
   "TRY003", # Just annoying, not really useful
   "COM812", # Conflicts with the Ruff formatter
+  "CPY001", # This repository does not use copyright headers
   "ISC001", # Conflicts with the Ruff formatter
   "FBT001", # Very opniated and not useful
 ]
