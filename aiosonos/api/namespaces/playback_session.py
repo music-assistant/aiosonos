@@ -4,20 +4,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiosonos.api.models import SessionStatus, Track
+from aiosonos.api.models import SessionError, SessionInfo, SessionStatus, Track
 
 from ._base import SonosNameSpace, SubscribeCallbackType, UnsubscribeCallbackType
 
 if TYPE_CHECKING:
-    from collections.abc import Container
+    from aiosonos.api.models import Container
 
 
 class PlaybackSessionNameSpace(SonosNameSpace):
     """PlaybackSession Namespace handlers."""
 
     namespace = "playbackSession"
-    event_type = "playbackSession"
-    _event_model = SessionStatus
+    event_type = "sessionInfo"
+    error_event_type = "sessionError"
+    _event_model = SessionInfo
     _event_key = "sessionId"
 
     async def create_session(
@@ -251,14 +252,20 @@ class PlaybackSessionNameSpace(SonosNameSpace):
     async def subscribe(
         self,
         session_id: str,
-        callback: SubscribeCallbackType,
+        callback: SubscribeCallbackType[SessionInfo],
+        error_callback: SubscribeCallbackType[SessionError] | None = None,
     ) -> UnsubscribeCallbackType:
         """
         Subscribe to events in the playbackSession namespace for a specific sessionId.
 
-        Returns handle to unsubscribe.
+        :param session_id: The session to follow.
+        :param callback: Receives sessionInfo events (session suspended or resumed).
+        :param error_callback: Receives sessionError events, e.g.
+            ERROR_SESSION_EVICTED when another app or source took over the group.
+        :return: Handle that stops this call's listener (a no-op once used); the
+            player's subscription is released when the last listener to the session stops.
 
         Reference:
-        https://docs.sonos.com/reference/playback-subscribe-groupid
+        https://docs.sonos.com/reference/playbacksession-subscribe-sessionid
         """
-        return await self._handle_subscribe(session_id, callback)
+        return await self._handle_subscribe(session_id, callback, error_callback)

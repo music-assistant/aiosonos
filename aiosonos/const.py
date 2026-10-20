@@ -7,7 +7,12 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .api.models import PlaybackError
+    from .api.models import (
+        AudioClipStatusEvent,
+        GroupCoordinatorChanged,
+        PlaybackError,
+        SessionError,
+    )
     from .group import SonosGroup
     from .player import SonosPlayer
 
@@ -26,6 +31,9 @@ class EventType(StrEnum):
     PLAYER_UPDATED = "player_updated"
     PLAYER_REMOVED = "player_removed"
     PLAYBACK_ERROR = "playback_error"
+    GROUP_COORDINATOR_CHANGED = "group_coordinator_changed"
+    SESSION_ERROR = "session_error"
+    AUDIO_CLIP_STATUS = "audio_clip_status"
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"
 
@@ -63,4 +71,32 @@ class PlaybackErrorEvent(SonosEventBase):
     data: PlaybackError
 
 
-SonosEvent = PlayerEvent | GroupEvent | PlaybackErrorEvent
+@dataclass
+class GroupCoordinatorChangedEvent(SonosEventBase):
+    """Representation of an Event emitted when the coordinator of a group changed."""
+
+    data: GroupCoordinatorChanged
+
+
+@dataclass
+class SessionErrorEvent(SonosEventBase):
+    """Representation of an Event emitted when a group's playback session failed or was evicted."""
+
+    data: SessionError
+
+
+@dataclass
+class AudioClipStatusChangedEvent(SonosEventBase):
+    """Representation of an Event emitted when the audio clips of a player changed status."""
+
+    data: AudioClipStatusEvent
+
+
+SonosEvent = (
+    PlayerEvent
+    | GroupEvent
+    | PlaybackErrorEvent
+    | GroupCoordinatorChangedEvent
+    | SessionErrorEvent
+    | AudioClipStatusChangedEvent
+)

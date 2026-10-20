@@ -21,7 +21,8 @@ from __future__ import annotations
 import asyncio
 import pprint
 import uuid
-from typing import TYPE_CHECKING, Any
+from contextlib import suppress
+from typing import TYPE_CHECKING, Any, cast
 
 import orjson
 from aiohttp import ClientSession, ClientWebSocketResponse, WSMsgType, client_exceptions
@@ -43,11 +44,20 @@ from aiosonos.utils import create_ssl_context
 from ._base import AbstractSonosApi
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from aiohttp import ClientSession
+
+    from aiosonos.api.models import GroupCoordinatorChanged
+
+    from .namespaces._base import UnsubscribeCallbackType
+
+    GroupCoordinatorChangedCallbackType = Callable[[str, GroupCoordinatorChanged], None]
 
 API_VERSION = 1
 # seconds to wait for a player's reply; a group command may never get one
 COMMAND_TIMEOUT = 10
+GROUP_COORDINATOR_CHANGED_EVENT = "groupCoordinatorChanged"
 
 
 class SonosLocalWebSocketsApi(AbstractSonosApi):
@@ -64,11 +74,42 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         self.websocket_url = websocket_url
         self._ws_client: ClientWebSocketResponse | None = None
         self._result_futures: dict[str, asyncio.Future] = {}
+        self._group_coordinator_listeners: list[GroupCoordinatorChangedCallbackType] = []
 
     @property
     def connected(self) -> bool:
         """Return if we're currently connected."""
         return self._ws_client is not None and not self._ws_client.closed
+
+    def subscribe_group_coordinator_changed(
+        self,
+        callback: GroupCoordinatorChangedCallbackType,
+    ) -> UnsubscribeCallbackType:
+        """
+        Listen for groupCoordinatorChanged events (global namespace).
+
+        The player sends these to the subscribers of a group's namespaces, without
+        a subscribe command of their own.
+
+        :param callback: Called with the group id from the event header and the
+            event body.
+        :return: Handle to stop listening.
+        """
+
+        # one listener object per call, so the handle stops only its own registration
+        # even when the same callback is registered twice
+        def _listener(group_id: str, event_data: GroupCoordinatorChanged) -> None:
+            # events are delivered a tick after they arrive: not to a listener stopped since
+            if _listener in self._group_coordinator_listeners:
+                callback(group_id, event_data)
+
+        self._group_coordinator_listeners.append(_listener)
+
+        def _unsubscribe() -> None:
+            with suppress(ValueError):
+                self._group_coordinator_listeners.remove(_listener)
+
+        return _unsubscribe
 
     async def send_command(
         self,
@@ -93,9 +134,9 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
         )
         future: asyncio.Future[Any] = self._loop.create_future()
         self._result_futures[command_message["cmdId"]] = future
-        # body params are passed as options
-        await self._send_message([command_message, options or {}])
         try:
+            # body params are passed as options
+            await self._send_message([command_message, options or {}])
             async with asyncio.timeout(COMMAND_TIMEOUT):
                 return await future
         except TimeoutError:
@@ -207,6 +248,10 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
             self.logger.debug("Received error event: %s: %s", msg, msg_data)
             if msg.get("type") == self._playback.error_event_type:
                 self.create_task(self._playback._handle_error_event(msg, msg_data))  # noqa: SLF001
+            elif msg.get("type") == self._playback_session.error_event_type:
+                self.create_task(
+                    self._playback_session._handle_error_event(msg, msg_data)  # noqa: SLF001
+                )
             return
 
         # handle command result message
@@ -220,7 +265,17 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
             return
 
         # handle EventMessage
-        if event_type := msg.get("type"):
+        if (event_type := msg.get("type")) == GROUP_COORDINATOR_CHANGED_EVENT:
+            group_id = msg.get("groupId")
+            if not isinstance(group_id, str) or not group_id:
+                self.logger.debug("Received %s without groupId: %s", event_type, msg)
+                return
+            assert self._loop is not None  # set when listening started
+            event_data = cast("GroupCoordinatorChanged", msg_data)
+            for listener in list(self._group_coordinator_listeners):
+                self._loop.call_soon(listener, group_id, event_data)
+            return
+        if event_type:
             # handle namespace specific events
             for namespace in (
                 self._audio_clip,
