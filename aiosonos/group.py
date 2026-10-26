@@ -457,10 +457,23 @@ class SonosGroup:
         async with self._session_lock:
             return await self._create_playback_session(app_id, app_context, account_id, custom_data)
 
-    async def play_stream_url(self, url: str, metadata: Container) -> None:
-        """Create a new playback session and start playing a single (radio) stream URL."""
+    async def play_stream_url(
+        self,
+        url: str,
+        metadata: Container,
+        on_session: Callable[[str], None] | None = None,
+    ) -> None:
+        """
+        Create a new playback session and start playing a single (radio) stream URL.
+
+        :param url: The stream URL to play.
+        :param metadata: The station metadata shown for the stream.
+        :param on_session: Called with the id of the session the stream is loaded into, once
+            that session exists and right before the load is sent. A load that is cut off
+            after this call (a timeout, a cancellation) may still have reached the player.
+        """
         async with self._session_lock:
-            await self._play_stream_url(url, metadata)
+            await self._play_stream_url(url, metadata, on_session)
 
     async def play_cloud_queue(
         self,
@@ -471,6 +484,7 @@ class SonosGroup:
         queue_version: str | None = None,
         position_millis: int | None = None,
         track_metadata: Track | None = None,
+        on_session: Callable[[str], None] | None = None,
     ) -> None:
         """
         Start playing a (cloud) queue in the active playback session, or a new one.
@@ -479,6 +493,10 @@ class SonosGroup:
 
         For all options, see:
         https://docs.sonos.com/reference/playbacksession-loadcloudqueue-sessionid
+
+        :param on_session: Called with the id of the session the queue is loaded into, once
+            that session exists and right before the load is sent. A load that is cut off
+            after this call (a timeout, a cancellation) may still have reached the player.
         """
         async with self._session_lock:
             session_id = self.active_session_id
@@ -487,6 +505,8 @@ class SonosGroup:
                     DEFAULT_APP_ID, DEFAULT_APP_CONTEXT, None, None
                 )
                 session_id = session["sessionId"]
+            if on_session is not None:
+                on_session(session_id)
             generation = self._cleanup_generation
             try:
                 await self.client.api.playback_session.load_cloud_queue(
@@ -664,11 +684,15 @@ class SonosGroup:
         self._unsubscribe_session = unsubscribe
         return session
 
-    async def _play_stream_url(self, url: str, metadata: Container) -> None:
+    async def _play_stream_url(
+        self, url: str, metadata: Container, on_session: Callable[[str], None] | None = None
+    ) -> None:
         """Create a session and load a stream URL into it; the caller holds _session_lock."""
         session = await self._create_playback_session(
             DEFAULT_APP_ID, DEFAULT_APP_CONTEXT, None, None
         )
+        if on_session is not None:
+            on_session(session["sessionId"])
         generation = self._cleanup_generation
         try:
             await self.client.api.playback_session.load_stream_url(
