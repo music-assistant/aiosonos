@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import uuid
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Self
@@ -132,8 +131,9 @@ class AbstractSonosApi:
         Tasks created by this helper will be properly cancelled on stop,
         and exceptions will be logged.
 
-        :param lazy: Start the task on a later loop iteration even when the loop's task
-            factory starts tasks eagerly, so it runs after the callbacks already scheduled.
+        :param lazy: Start the task on a later loop iteration, bypassing the loop's task
+            factory (which may start tasks eagerly), so it runs after the callbacks
+            already scheduled.
         """
 
         def task_done_callback(_task: asyncio.Future | asyncio.Task) -> None:
@@ -150,11 +150,8 @@ class AbstractSonosApi:
                     exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
 
-        if lazy and sys.version_info >= (3, 12):
-            # not through the loop's task factory, which may run the task right here
-            task = asyncio.Task(target, loop=self._loop, eager_start=False)
-        else:
-            task = self._loop.create_task(target)
+        # a lazy task is not made through the loop's task factory, which may run it right here
+        task = asyncio.Task(target, loop=self._loop) if lazy else self._loop.create_task(target)
         task_id = uuid.uuid4().hex
         task.task_id = task_id
         self._tracked_tasks[task_id] = task
