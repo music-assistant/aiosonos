@@ -249,6 +249,31 @@ class PlaybackSessionNameSpace(SonosNameSpace):
             options=options,
         )
 
+    async def leave_session(
+        self,
+        session_id: str,
+        queue_version: str | None = None,
+    ) -> None:
+        """
+        Send leaveSession command to a playback session: ends it, rather than suspending it.
+
+        The session's playback stops at once and the player holds no session afterwards;
+        subscribers of the session get a sessionError ERROR_SESSION_EVICTED. A command of
+        the local API without a page on docs.sonos.com, verified on firmware 86.10 and 97.2.
+
+        :param session_id: The session to leave.
+        :param queue_version: The cloud queue version last loaded, if any.
+        """
+        options = {}
+        if queue_version is not None:
+            options["queueVersion"] = queue_version
+        await self.api.send_command(
+            namespace=self.namespace,
+            command="leaveSession",
+            sessionId=session_id,
+            options=options,
+        )
+
     async def subscribe(
         self,
         session_id: str,
