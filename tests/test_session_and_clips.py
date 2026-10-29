@@ -604,6 +604,72 @@ async def test_a_queue_left_unanswered_keeps_its_session() -> None:
     assert group.active_session_id == "session1"
 
 
+async def test_a_stream_load_names_its_session_before_it_is_sent() -> None:
+    """The caller learns which session the stream goes into, before the load can be cut off."""
+    client = _client()
+    sessions: list[str] = []
+    loads_at_call: list[int] = []
+    client.api.playback_session.load_stream_url = AsyncMock()
+
+    def _on_session(session_id: str) -> None:
+        sessions.append(session_id)
+        loads_at_call.append(client.api.playback_session.load_stream_url.await_count)
+
+    group = _group(client)
+
+    await group.play_stream_url("https://stream", None, _on_session)  # type: ignore[arg-type]
+
+    assert sessions == ["session1"]
+    assert loads_at_call == [0]
+    assert client.api.playback_session.load_stream_url.await_args.args[0] == "session1"
+
+
+async def test_a_stream_whose_session_was_never_made_names_none() -> None:
+    """A creation that fails leaves the caller without a session: nothing was loaded anywhere."""
+    client = _client()
+    client.api.playback_session.create_session = AsyncMock(
+        side_effect=CommandTimeout("playbackSession:createSession", 10),
+    )
+    client.api.playback_session.load_stream_url = AsyncMock()
+    on_session = Mock()
+    group = _group(client)
+
+    with pytest.raises(CommandTimeout):
+        await group.play_stream_url("https://stream", None, on_session)  # type: ignore[arg-type]
+
+    on_session.assert_not_called()
+    client.api.playback_session.load_stream_url.assert_not_awaited()
+
+
+async def test_a_stream_load_left_unanswered_still_named_its_session() -> None:
+    """A load without reply may have gone through: the caller knows the session it went to."""
+    client = _client()
+    client.api.playback_session.load_stream_url = AsyncMock(
+        side_effect=CommandTimeout("playbackSession:loadStreamUrl", 10),
+    )
+    on_session = Mock()
+    group = _group(client)
+
+    with pytest.raises(CommandTimeout):
+        await group.play_stream_url("https://stream", None, on_session)  # type: ignore[arg-type]
+
+    on_session.assert_called_once_with("session1")
+
+
+async def test_a_queue_load_names_the_session_it_reuses() -> None:
+    """A queue loaded into the session already in use names that session, not a new one."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    client.api.playback_session.load_cloud_queue = AsyncMock()
+    on_session = Mock()
+
+    await group.play_cloud_queue("https://queue", on_session=on_session)
+
+    on_session.assert_called_once_with("session1")
+    client.api.playback_session.create_session.assert_awaited_once()
+
+
 async def test_a_stream_refused_for_a_session_ends_its_use() -> None:
     """A stream URL the player refuses drops the session like a refused queue."""
     client = _client()
