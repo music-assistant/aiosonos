@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
 
 from aiosonos.api.models import GroupStatus
+from aiosonos.api.namespaces.playback_session import PlaybackSessionNameSpace
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType
 from aiosonos.exceptions import CommandTimeout, FailedCommand, InvalidState
@@ -36,6 +37,7 @@ def _client() -> SonosLocalApiClient:
         side_effect=[{"sessionId": "session1"}, {"sessionId": "session2"}],
     )
     client.api.playback_session.subscribe = AsyncMock(side_effect=lambda *_: Mock())
+    client.api.playback_session.leave_session = AsyncMock()
     return client
 
 
@@ -489,38 +491,101 @@ async def test_the_same_session_handed_back_unmonitored_is_subscribed_to() -> No
 
 
 def _commands(client: SonosLocalApiClient) -> list[str]:
-    """Record the session commands as they go out: subscribe <id>, unsubscribe <id>."""
+    """Record the session commands as they go out: subscribe/unsubscribe/leave <id>."""
     commands: list[str] = []
 
     async def _subscribe(session_id: str, *_: object) -> Callable[[], None]:
         commands.append(f"subscribe {session_id}")
         return lambda: commands.append(f"unsubscribe {session_id}")
 
+    async def _leave(session_id: str, *_: object) -> None:
+        commands.append(f"leave {session_id}")
+
     client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
-    client.api.playback_session.suspend = AsyncMock()
+    client.api.playback_session.leave_session = AsyncMock(side_effect=_leave)
     return commands
 
 
-async def test_a_stopped_session_handed_back_again_is_still_listened_to() -> None:
-    """After a stop, the same session created again keeps its subscription: no commands."""
+async def test_a_stop_leaves_its_session_then_stops_listening_to_it() -> None:
+    """A stop leaves, then unsubscribes: a takeover during the leave is still heard."""
+    client = _client()
+    commands = _commands(client)
+    group = _group(client)
+    await group.create_playback_session()
+
+    await group.stop()
+
+    assert commands == ["subscribe session1", "leave session1", "unsubscribe session1"]
+    assert group.active_session_id is None
+    assert group._subscribed_session_id is None
+
+
+async def test_a_takeover_during_the_leave_is_signalled_and_not_cleared() -> None:
+    """Evicted by another app while the leave is in flight: signalled once, no clear session."""
+    client = _client()
+    namespace = PlaybackSessionNameSpace(client.api)
+    client.api.send_command = AsyncMock(return_value={})
+    client.api.send_command_no_wait = Mock()
+    namespace.create_session = AsyncMock(return_value={"sessionId": "session1"})
+    client.api.playback_session = namespace
+    group = _group(client)
+    await group.create_playback_session()
+    client.signal_event.reset_mock()
+
+    async def _leave(*_: object) -> None:
+        await namespace._handle_error_event({"sessionId": "session1"}, EVICTED)
+        raise FailedCommand("ERROR_INVALID_SESSION")
+
+    namespace.leave_session = AsyncMock(side_effect=_leave)
+    await group.stop()
+
+    client.signal_event.assert_called_once()
+    assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
+    namespace.create_session.assert_awaited_once()
+    assert group.active_session_id is None
+    assert group._evictions == 1
+
+
+async def test_a_left_session_handed_back_again_is_listened_to_again() -> None:
+    """The same session created again after a stop is subscribed anew: its listener ended."""
     client = _client()
     commands = _commands(client)
     client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "session1"})
     group = _group(client)
     await group.create_playback_session()
     await group.stop()
-    assert group.active_session_id is None
 
     await group.create_playback_session()
 
-    assert commands == ["subscribe session1"]
+    assert commands == [
+        "subscribe session1",
+        "leave session1",
+        "unsubscribe session1",
+        "subscribe session1",
+    ]
     assert group.active_session_id == "session1"
     _session_error_callback(client)(EVICTED)
     assert group.active_session_id is None
 
 
+async def test_a_stops_own_eviction_event_arriving_after_it_is_not_signalled() -> None:
+    """The eviction a leave raises reaches a stopped session: not a takeover, nothing signalled."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    error_callback = _session_error_callback(client)
+    client.signal_event.reset_mock()
+    await group.stop()
+
+    error_callback({"errorCode": "ERROR_SESSION_EVICTED", "reason": "Leaving Muse session"})
+
+    client.signal_event.assert_not_called()
+    assert group._evictions == 0
+    assert group.active_session_id is None
+
+
 async def test_a_new_session_after_a_stop_replaces_the_stopped_ones_listener() -> None:
-    """A different session after a stop ends the stopped one's subscription before its own."""
+    """A different session after a stop is subscribed to; the stopped one's listener is gone."""
     client = _client()
     commands = _commands(client)
     group = _group(client)
@@ -529,7 +594,12 @@ async def test_a_new_session_after_a_stop_replaces_the_stopped_ones_listener() -
 
     await group.create_playback_session()
 
-    assert commands == ["subscribe session1", "unsubscribe session1", "subscribe session2"]
+    assert commands == [
+        "subscribe session1",
+        "leave session1",
+        "unsubscribe session1",
+        "subscribe session2",
+    ]
     assert group.active_session_id == "session2"
     assert group._subscribed_session_id == "session2"
 
@@ -750,12 +820,12 @@ async def test_a_stopped_session_evicted_during_create_session_is_not_revived() 
 
     assert group.active_session_id is None
     assert group._subscribed_session_id is None
-    assert commands == ["subscribe session1", "unsubscribe session1"]
+    assert commands == ["subscribe session1", "leave session1", "unsubscribe session1"]
     client.signal_event.assert_not_called()
 
 
-async def test_an_eviction_of_a_stopped_session_ends_its_subscription() -> None:
-    """A stopped session evicted by someone else is not listened to any longer."""
+async def test_an_eviction_of_a_stopped_session_is_not_signalled() -> None:
+    """A stopped session's eviction, arriving late, is nobody's concern: no new commands."""
     client = _client()
     commands = _commands(client)
     group = _group(client)
@@ -764,7 +834,7 @@ async def test_an_eviction_of_a_stopped_session_ends_its_subscription() -> None:
 
     _session_error_callback(client)(EVICTED)
 
-    assert commands == ["subscribe session1", "unsubscribe session1"]
+    assert commands == ["subscribe session1", "leave session1", "unsubscribe session1"]
     assert group._subscribed_session_id is None
     client.signal_event.assert_not_called()
 
@@ -789,7 +859,7 @@ async def test_an_error_after_cleanup_before_the_subscribe_reply_is_ignored() ->
 
 
 async def test_a_stop_ordered_while_subscribing_lands_after_it() -> None:
-    """A stop ordered before the subscribe reply waits for it; the session stays listened to."""
+    """A stop ordered before the subscribe reply waits for it, then leaves that session."""
     client = _client()
     commands = _commands(client)
     subscribed = asyncio.Event()
@@ -804,14 +874,14 @@ async def test_a_stop_ordered_while_subscribing_lands_after_it() -> None:
     creation = asyncio.ensure_future(group.create_playback_session())
     stop = asyncio.ensure_future(group.stop())
     await asyncio.sleep(0.01)
-    client.api.playback_session.suspend.assert_not_awaited()
+    client.api.playback_session.leave_session.assert_not_awaited()
     subscribed.set()
     await asyncio.gather(creation, stop)
 
-    client.api.playback_session.suspend.assert_awaited_once_with("session1")
+    client.api.playback_session.leave_session.assert_awaited_once_with("session1")
     assert group.active_session_id is None
-    assert group._subscribed_session_id == "session1"
-    assert commands == ["subscribe session1"]
+    assert group._subscribed_session_id is None
+    assert commands == ["subscribe session1", "leave session1", "unsubscribe session1"]
 
 
 async def test_a_stop_ordered_during_a_play_lands_after_its_load() -> None:
@@ -828,12 +898,12 @@ async def test_a_stop_ordered_during_a_play_lands_after_its_load() -> None:
     async def _load(session_id: str, **_: object) -> None:
         order.append(f"load {session_id}")
 
-    async def _suspend(session_id: str) -> None:
-        order.append(f"suspend {session_id}")
+    async def _leave(session_id: str) -> None:
+        order.append(f"leave {session_id}")
 
     client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
     client.api.playback_session.load_cloud_queue = AsyncMock(side_effect=_load)
-    client.api.playback_session.suspend = AsyncMock(side_effect=_suspend)
+    client.api.playback_session.leave_session = AsyncMock(side_effect=_leave)
     group = _group(client)
 
     play = asyncio.ensure_future(group.play_cloud_queue("http://host/queue/"))
@@ -842,7 +912,7 @@ async def test_a_stop_ordered_during_a_play_lands_after_its_load() -> None:
     subscribed.set()
     await asyncio.gather(play, stop)
 
-    assert order == ["load session1", "suspend session1"]
+    assert order == ["load session1", "leave session1"]
     assert group.active_session_id is None
 
 
@@ -865,8 +935,6 @@ async def test_a_stop_ordered_while_a_play_creates_its_session_ends_at_its_evict
 
     client.api.playback_session.create_session = AsyncMock(side_effect=_create)
     client.api.playback_session.load_cloud_queue = AsyncMock(side_effect=_load)
-    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
-    client.api.playback_session.load_stream_url = AsyncMock()
     play = asyncio.ensure_future(group.play_cloud_queue("http://host/queue/"))
     await creating.wait()
     stop = asyncio.ensure_future(group.stop())
@@ -874,8 +942,8 @@ async def test_a_stop_ordered_while_a_play_creates_its_session_ends_at_its_evict
     created.set()
     await asyncio.gather(play, stop)
 
-    client.api.playback_session.suspend.assert_not_awaited()
-    client.api.playback_session.load_stream_url.assert_not_awaited()
+    client.api.playback_session.leave_session.assert_not_awaited()
+    client.api.playback_session.create_session.assert_awaited_once()
     assert group.active_session_id is None
 
 
@@ -896,7 +964,6 @@ async def test_a_stop_lands_on_the_session_made_after_an_eviction_while_it_waite
 
     client.api.playback_session.create_session = AsyncMock(side_effect=_create)
     client.api.playback_session.load_stream_url = AsyncMock()
-    client.api.playback_session.suspend = AsyncMock()
     play = asyncio.ensure_future(group.play_stream_url("http://host/stream", None))
     await creating.wait()
     stop = asyncio.ensure_future(group.stop())
@@ -904,7 +971,7 @@ async def test_a_stop_lands_on_the_session_made_after_an_eviction_while_it_waite
     created.set()
     await asyncio.gather(play, stop)
 
-    client.api.playback_session.suspend.assert_awaited_once_with("session2")
+    client.api.playback_session.leave_session.assert_awaited_once_with("session2")
     assert group.active_session_id is None
 
 
@@ -914,8 +981,7 @@ async def test_an_eviction_of_a_stopped_session_does_not_end_a_waiting_stop() ->
     group = _group(client)
     await group.create_playback_session()
     error_callback = _session_error_callback(client)
-    client.api.playback_session.suspend = AsyncMock()
-    await group.stop()  # session1 stopped, still listened to
+    await group.stop()  # session1 left; its late eviction event may still arrive
     creating = asyncio.Event()
     creations = 0
 
@@ -930,8 +996,6 @@ async def test_an_eviction_of_a_stopped_session_does_not_end_a_waiting_stop() ->
         raise FailedCommand("ERROR_SESSION_IN_PROGRESS")
 
     client.api.playback_session.create_session = AsyncMock(side_effect=_create)
-    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
-    client.api.playback_session.load_stream_url = AsyncMock()
     creation = asyncio.ensure_future(group.create_playback_session())
     await creating.wait()
     stop = asyncio.ensure_future(group.stop())
@@ -939,7 +1003,8 @@ async def test_an_eviction_of_a_stopped_session_does_not_end_a_waiting_stop() ->
         await creation
     await stop
 
-    client.api.playback_session.load_stream_url.assert_awaited_once()
+    assert client.api.playback_session.create_session.await_count == 2
+    client.api.playback_session.leave_session.assert_awaited_with("session2")
 
 
 async def test_a_stop_whose_session_is_evicted_while_it_waits_loads_nothing() -> None:
@@ -956,8 +1021,6 @@ async def test_a_stop_whose_session_is_evicted_while_it_waits_loads_nothing() ->
         await evicted.wait()
 
     client.api.playback_session.load_cloud_queue = AsyncMock(side_effect=_load)
-    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
-    client.api.playback_session.load_stream_url = AsyncMock()
     play = asyncio.ensure_future(group.play_cloud_queue("http://host/queue/"))
     await loading.wait()
     stop = asyncio.ensure_future(group.stop())
@@ -966,8 +1029,8 @@ async def test_a_stop_whose_session_is_evicted_while_it_waits_loads_nothing() ->
     evicted.set()
     await asyncio.gather(play, stop)
 
-    client.api.playback_session.suspend.assert_not_awaited()
-    client.api.playback_session.load_stream_url.assert_not_awaited()
+    client.api.playback_session.leave_session.assert_not_awaited()
+    client.api.playback_session.create_session.assert_awaited_once()
     assert group.active_session_id is None
 
 
@@ -1257,75 +1320,104 @@ async def test_a_queue_started_during_an_evicted_creation_gets_its_own_session()
     assert group.active_session_id == "session2"
 
 
-async def test_an_evicted_suspend_reply_ends_the_stop_also_after_a_cleanup() -> None:
-    """The group cleaned up during the suspend, the evicted reply still ends the stop: no clear."""
+async def test_an_evicted_leave_reply_ends_the_stop_also_after_a_cleanup() -> None:
+    """The group cleaned up during the leave, the evicted reply still ends the stop: no clear."""
     client = _client()
     group = _group(client)
     await group.create_playback_session()
-    client.api.playback_session.load_stream_url = AsyncMock()
 
-    async def _suspend(*_: object) -> None:
+    async def _leave(*_: object) -> None:
         group.cleanup()
         raise FailedCommand(EVICTED["errorCode"])
 
-    client.api.playback_session.suspend = AsyncMock(side_effect=_suspend)
+    client.api.playback_session.leave_session = AsyncMock(side_effect=_leave)
     await group.stop()
 
     client.api.playback_session.create_session.assert_awaited_once()
-    client.api.playback_session.load_stream_url.assert_not_awaited()
     assert group.active_session_id is None
 
 
-async def test_a_stop_whose_suspend_reply_says_evicted_loads_nothing() -> None:
-    """An eviction in the suspend reply ends the stop: no clear session takes the group back."""
+async def test_a_stop_whose_leave_reply_says_evicted_clears_nothing() -> None:
+    """An eviction in the leave reply ends the stop: no clear session takes the group back."""
     client = _client()
     group = _group(client)
     await group.create_playback_session()
     client.signal_event.reset_mock()
-    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand(EVICTED["errorCode"]))
-    client.api.playback_session.load_stream_url = AsyncMock()
+    client.api.playback_session.leave_session = AsyncMock(
+        side_effect=FailedCommand(EVICTED["errorCode"])
+    )
 
     await group.stop()
 
     client.api.playback_session.create_session.assert_awaited_once()
-    client.api.playback_session.load_stream_url.assert_not_awaited()
     assert group.active_session_id is None
     assert group._subscribed_session_id is None
     assert client.signal_event.call_args.args[0].data["sessionId"] == "session1"
 
 
-async def test_a_session_evicted_during_its_suspend_is_not_cleared_after() -> None:
-    """An eviction event during the suspend ends the stop: no clear session takes the group back."""
+async def test_a_session_evicted_during_its_leave_is_not_cleared_after() -> None:
+    """An eviction event during the leave ends the stop: no clear session takes the group back."""
     client = _client()
     group = _group(client)
     await group.create_playback_session()
     first_error_callback = _session_error_callback(client)
     client.signal_event.reset_mock()
-    client.api.playback_session.load_stream_url = AsyncMock()
 
-    async def _suspend(*_: object) -> None:
+    async def _leave(*_: object) -> None:
         first_error_callback(EVICTED)
         raise FailedCommand("ERROR_INVALID_SESSION")
 
-    client.api.playback_session.suspend = AsyncMock(side_effect=_suspend)
+    client.api.playback_session.leave_session = AsyncMock(side_effect=_leave)
     await group.stop()
 
     client.api.playback_session.create_session.assert_awaited_once()
-    client.api.playback_session.load_stream_url.assert_not_awaited()
     assert group.active_session_id is None
     client.signal_event.assert_called_once()
 
 
-async def test_a_stop_without_a_session_still_clears_the_queue() -> None:
-    """With no session to suspend, the stop clears the queue as before."""
+async def test_a_stop_of_a_session_already_gone_clears_nothing() -> None:
+    """The player answers ERROR_INVALID_OBJECT_ID: nothing of ours plays, no clear session."""
     client = _client()
     group = _group(client)
-    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
-    client.api.playback_session.load_stream_url = AsyncMock()
+    await group.create_playback_session()
+    client.signal_event.reset_mock()
+    client.api.playback_session.leave_session = AsyncMock(
+        side_effect=FailedCommand("ERROR_INVALID_OBJECT_ID", "There is no session on this player.")
+    )
 
     await group.stop()
 
-    client.api.playback_session.load_stream_url.assert_awaited_once()
+    client.api.playback_session.create_session.assert_awaited_once()
+    client.signal_event.assert_not_called()
+    assert group.active_session_id is None
+
+
+async def test_a_stop_without_a_session_makes_one_and_leaves_it() -> None:
+    """With no session to leave, the stop makes one (which stops the player) and leaves it."""
+    client = _client()
+    group = _group(client)
+
+    await group.stop()
+
+    client.api.playback_session.create_session.assert_awaited_once()
+    client.api.playback_session.leave_session.assert_awaited_once_with("session1")
+    assert group.active_session_id is None
+    assert group._subscribed_session_id is None
+
+
+async def test_a_refused_leave_falls_back_to_the_clear_session() -> None:
+    """A leave refused for another reason: the clear session is made and left in its turn."""
+    client = _client()
+    group = _group(client)
+    await group.create_playback_session()
+    client.api.playback_session.leave_session = AsyncMock(
+        side_effect=[FailedCommand("ERROR_COMMAND_FAILED"), None]
+    )
+
+    await group.stop()
+
+    assert client.api.playback_session.create_session.await_count == 2
+    assert client.api.playback_session.leave_session.await_args_list[1].args == ("session2",)
     assert group.active_session_id is None
 
 
@@ -1335,8 +1427,9 @@ async def test_a_stops_own_clear_does_not_signal_the_eviction_of_the_stopped_ses
     group = _group(client)
     await group.create_playback_session()
     first_error_callback = _session_error_callback(client)
-    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
-    client.api.playback_session.load_stream_url = AsyncMock()
+    client.api.playback_session.leave_session = AsyncMock(
+        side_effect=[FailedCommand("ERROR_COMMAND_FAILED"), None]
+    )
 
     def _create(*_: object) -> dict[str, str]:
         first_error_callback(EVICTED)
@@ -1347,25 +1440,56 @@ async def test_a_stops_own_clear_does_not_signal_the_eviction_of_the_stopped_ses
 
     client.signal_event.assert_not_called()
     assert group.active_session_id is None
-    client.api.playback_session.load_stream_url.assert_awaited_once()
+    client.api.playback_session.leave_session.assert_awaited_with("session2")
 
 
-async def test_a_stop_whose_clear_session_is_cleaned_up_loads_nothing() -> None:
-    """The clear-path creation of a stop raises InvalidState past the stop, and loads nothing."""
+async def test_a_failed_leave_of_the_clear_session_is_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The clear session's leave refused or unanswered: the stop is done, a warning says so."""
     client = _client()
     group = _group(client)
-    client.api.playback_session.suspend = AsyncMock(side_effect=FailedCommand("ERROR_INVALID"))
-    client.api.playback_session.load_stream_url = AsyncMock()
+    client.api.playback_session.leave_session = AsyncMock(
+        side_effect=CommandTimeout("playbackSession:leaveSession", 10)
+    )
 
-    async def _subscribe(*_: object) -> Mock:
-        group.cleanup()
-        return Mock()
-
-    client.api.playback_session.subscribe = AsyncMock(side_effect=_subscribe)
-    with pytest.raises(InvalidState):
+    with caplog.at_level(logging.WARNING, logger="aiosonos.group"):
         await group.stop()
 
-    client.api.playback_session.load_stream_url.assert_not_awaited()
+    assert "Could not leave the clear session session1" in caplog.text
+    assert group.active_session_id is None
+
+
+async def test_a_stop_whose_clear_session_is_cleaned_up_still_leaves_it() -> None:
+    """The group cleaned up while the clear session is made: it is still left, nothing raised."""
+    client = _client()
+    group = _group(client)
+
+    async def _create(*_: object) -> dict[str, str]:
+        group.cleanup()
+        return {"sessionId": "session1"}
+
+    client.api.playback_session.create_session = AsyncMock(side_effect=_create)
+    await group.stop()
+
+    client.api.playback_session.subscribe.assert_not_awaited()
+    client.api.playback_session.leave_session.assert_awaited_once_with("session1")
+    assert group.active_session_id is None
+
+
+async def test_a_refused_clear_session_is_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """The clear session refused: nothing was stopped, the stop returns and a warning says so."""
+    client = _client()
+    group = _group(client)
+    client.api.playback_session.create_session = AsyncMock(
+        side_effect=FailedCommand("ERROR_SESSION_IN_PROGRESS")
+    )
+
+    with caplog.at_level(logging.WARNING, logger="aiosonos.group"):
+        await group.stop()
+
+    assert "Could not make the clear session of group group1" in caplog.text
+    client.api.playback_session.leave_session.assert_not_awaited()
     assert group.active_session_id is None
 
 

@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
+INVALID_OBJECT_ID_ERROR = "ERROR_INVALID_OBJECT_ID"
 DEFAULT_APP_ID = "com.aiosonos.playback"
 DEFAULT_APP_CONTEXT = "1"
 
@@ -96,8 +97,7 @@ class SonosGroup:
         self._playback_status_last_updated: float = 0.0
         self._unsubscribe_callbacks = []
         # the session listened to for sessionInfo/sessionError events; kept until another
-        # session takes its place or the group is cleaned up, as a stopped session may be
-        # handed back by the next createSession
+        # session takes its place, a stop leaves it or the group is cleaned up
         self._subscribed_session_id: str | None = None
         self._unsubscribe_session: Callable[[], None] | None = None
         # the session evicted since the last creation started: handed back by that
@@ -305,10 +305,11 @@ class SonosGroup:
         """
         Send stop command to group; a stop ordered during a play lands after it.
 
-        A session evicted meanwhile counts as stopped, and nothing else is loaded, so the
-        group is not taken back from whatever took it over. Raises `CommandTimeout` when the
-        player does not answer, `InvalidState` when the group is cleaned up while the clear
-        session is made.
+        The active session is left: its playback stops and the player holds no session
+        afterwards. Without one, a session is made and left, which stops whatever plays
+        (line-in and TV audio included). A session evicted meanwhile counts as stopped,
+        and nothing else is loaded, so the group is not taken back from whatever took it
+        over. Raises `CommandTimeout` when the player does not answer.
         """
         # a play under the lock may give this stop its session yet; evicted before the
         # stop gets its turn, that session counts as stopped as well
@@ -319,32 +320,32 @@ class SonosGroup:
             if session_id is None and self._evictions != evictions:
                 return
             try:
-                # always first attempt to suspend the active session
-                await self.client.api.playback_session.suspend(session_id)
-            except CommandTimeout:
-                # the player may have suspended already; do not clear its queue
-                raise
-            except FailedCommand as err:
-                if session_id is not None and err.error_code == SESSION_EVICTED_ERROR:
-                    # the reply says what a sessionError event would: handled as one
-                    self._handle_session_error(generation, session_id, _session_error(err))
+                if session_id is None:
+                    await self._clear_queue()
                     return
-                if session_id is not None and session_id == self._evicted_session_id:
-                    # another app or source took the group over meanwhile: the session is
-                    # stopped, and the clear below would take the group back from it
-                    return
-                # this turns out the best way to clear the queue,
-                # just send an invalid uri and it will clear the queue
-                # and stop any playing content, including linein sources
-                # (the session is over either way: its eviction by the clear is no takeover)
-                self.active_session_id = None
                 try:
-                    await self._play_stream_url("clear", None)
+                    await self.client.api.playback_session.leave_session(session_id)
                 except CommandTimeout:
-                    # unanswered as well: the caller must not take the stop for done
+                    # the player may have left already; do not clear its queue
                     raise
-                except FailedCommand:
-                    pass
+                except FailedCommand as err:
+                    if err.error_code == SESSION_EVICTED_ERROR:
+                        # the reply says what a sessionError event would: handled as one
+                        self._handle_session_error(generation, session_id, _session_error(err))
+                        return
+                    if session_id == self._evicted_session_id:
+                        # another app or source took the group over meanwhile: the session is
+                        # stopped, and the clear below would take the group back from it
+                        return
+                    if err.error_code == INVALID_OBJECT_ID_ERROR:
+                        # the player holds no session, or another app's: nothing of ours plays
+                        return
+                    self.active_session_id = None
+                    await self._clear_queue()
+                finally:
+                    # a takeover during the leave was heard and signalled; the eviction the
+                    # leave itself raises arrives after its reply, when nobody listens any more
+                    self._stop_session_listener()
             finally:
                 self.active_session_id = None
 
@@ -639,7 +640,7 @@ class SonosGroup:
             raise InvalidState(msg)
         self.active_session_id = session_id
         if self._subscribed_session_id == session_id:
-            # listened to already: in use, or stopped and handed back again
+            # listened to already: the session in use, handed back again
             return session
         # the listener of another session (replaced, or stopped earlier) makes way
         self._stop_session_listener()
@@ -704,6 +705,37 @@ class SonosGroup:
         except FailedCommand as err:
             self._handle_refused_load(generation, session["sessionId"], err)
             raise
+
+    async def _clear_queue(self) -> None:
+        """
+        Stop whatever the group plays without a session of ours; the caller holds _session_lock.
+
+        Making a session stops the content (line-in and TV audio included); leaving it right
+        away leaves the player with no session parked. The session is never played into,
+        so it is not subscribed to or handed out. Raises `CommandTimeout` when the creation
+        goes unanswered.
+        """
+        try:
+            session = await self.client.api.playback_session.create_session(
+                self.id, DEFAULT_APP_ID, DEFAULT_APP_CONTEXT
+            )
+        except CommandTimeout:
+            # unanswered: the caller must not take the stop for done
+            raise
+        except FailedCommand as err:
+            # refused: nothing was made, so nothing was stopped (a stopped session of ours
+            # evicted by the attempt is settled by its own event; that is no takeover)
+            _LOGGER.warning("Could not make the clear session of group %s: %s", self.id, err)
+            return
+        session_id = session["sessionId"]
+        try:
+            await self.client.api.playback_session.leave_session(session_id)
+        except (CommandTimeout, FailedCommand) as err:
+            # the creation did the stopping; a session the player keeps is handed back
+            # to, or replaced by, the next play
+            _LOGGER.warning(
+                "Could not leave the clear session %s of group %s: %s", session_id, self.id, err
+            )
 
     def _handle_refused_load(self, generation: int, session_id: str, err: FailedCommand) -> None:
         """
