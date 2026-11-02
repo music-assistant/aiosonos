@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from abc import abstractmethod
@@ -17,7 +18,6 @@ from aiosonos.api.namespaces.playback_session import PlaybackSessionNameSpace
 from aiosonos.api.namespaces.player_volume import PlayerVolumeNameSpace
 
 if TYPE_CHECKING:
-    import asyncio
     from collections.abc import Awaitable
     from types import TracebackType
 
@@ -122,12 +122,18 @@ class AbstractSonosApi:
     def create_task(
         self,
         target: Awaitable,
+        *,
+        lazy: bool = False,
     ) -> asyncio.Task:
         """
         Create Task on (main) event loop from Coroutine(function).
 
         Tasks created by this helper will be properly cancelled on stop,
         and exceptions will be logged.
+
+        :param lazy: Start the task on a later loop iteration, bypassing the loop's task
+            factory (which may start tasks eagerly), so it runs after the callbacks
+            already scheduled.
         """
 
         def task_done_callback(_task: asyncio.Future | asyncio.Task) -> None:
@@ -144,7 +150,8 @@ class AbstractSonosApi:
                     exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
 
-        task = self._loop.create_task(target)
+        # a lazy task is not made through the loop's task factory, which may run it right here
+        task = asyncio.Task(target, loop=self._loop) if lazy else self._loop.create_task(target)
         task_id = uuid.uuid4().hex
         task.task_id = task_id
         self._tracked_tasks[task_id] = task

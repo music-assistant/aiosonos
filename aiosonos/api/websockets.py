@@ -44,7 +44,7 @@ from aiosonos.utils import create_ssl_context
 from ._base import AbstractSonosApi
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine
 
     from aiohttp import ClientSession
 
@@ -247,9 +247,9 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
             # unsolicited error event, sent to a namespace subscription
             self.logger.debug("Received error event: %s: %s", msg, msg_data)
             if msg.get("type") == self._playback.error_event_type:
-                self.create_task(self._playback._handle_error_event(msg, msg_data))  # noqa: SLF001
+                self._deliver_event(self._playback._handle_error_event(msg, msg_data))  # noqa: SLF001
             elif msg.get("type") == self._playback_session.error_event_type:
-                self.create_task(
+                self._deliver_event(
                     self._playback_session._handle_error_event(msg, msg_data)  # noqa: SLF001
                 )
             return
@@ -287,7 +287,7 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
                 self._player_volume,
             ):
                 if event_type == namespace.event_type:
-                    self.create_task(namespace._handle_event(msg, msg_data))  # noqa: SLF001
+                    self._deliver_event(namespace._handle_event(msg, msg_data))  # noqa: SLF001
                     break
             else:
                 self.logger.debug(
@@ -299,6 +299,17 @@ class SonosLocalWebSocketsApi(AbstractSonosApi):
 
         # Log anything we can't handle here
         self.logger.debug("Received unhandled message: %s", msg)
+
+    def _deliver_event(self, handler: Coroutine[Any, Any, None]) -> None:
+        """
+        Run an event's namespace handler in wire order with the replies around it.
+
+        A reply and an event read together reach their takers in the order the player sent
+        them: the handler is started on the loop's queue, never right here, so a command
+        awaiting a reply read before the event resumes first (an eager task factory would
+        otherwise run the handler before it).
+        """
+        self.create_task(handler, lazy=True)
 
     def _pending_future(self, cmd_id: str) -> asyncio.Future[Any] | None:
         """Return the future still waiting for the reply to a command (if any)."""

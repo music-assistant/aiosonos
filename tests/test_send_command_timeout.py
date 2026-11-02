@@ -55,13 +55,12 @@ async def test_reply_in_time_resolves() -> None:
 
 
 async def test_stop_timeout_does_not_clear_queue() -> None:
-    """An unanswered suspend is raised; the queue-clearing fallback is not sent."""
+    """An unanswered leave is raised; the queue-clearing fallback is not sent."""
     client = MagicMock()
-    client.api.playback_session.suspend = AsyncMock(
-        side_effect=CommandTimeout("playbackSession:suspend", 10),
+    client.api.playback_session.leave_session = AsyncMock(
+        side_effect=CommandTimeout("playbackSession:leaveSession", 10),
     )
     client.api.playback_session.create_session = AsyncMock()
-    client.api.playback_session.load_stream_url = AsyncMock()
     group = SonosGroup(client, {"id": "group1"})
     group.active_session_id = "session1"
 
@@ -69,47 +68,45 @@ async def test_stop_timeout_does_not_clear_queue() -> None:
         await group.stop()
 
     client.api.playback_session.create_session.assert_not_called()
-    client.api.playback_session.load_stream_url.assert_not_called()
     assert group.active_session_id is None
 
 
 async def test_stop_fallback_timeout_is_raised() -> None:
-    """A refused suspend falls back to clearing the queue; that going unanswered is raised too."""
+    """A refused leave falls back to clearing the queue; that going unanswered is raised too."""
     client = MagicMock()
-    client.api.playback_session.suspend = AsyncMock(
+    client.api.playback_session.leave_session = AsyncMock(
         side_effect=FailedCommand("ERROR_INVALID_PARAMETER"),
     )
     client.api.playback_session.create_session = AsyncMock(
         side_effect=CommandTimeout("playbackSession:createSession", 10),
     )
-    client.api.playback_session.load_stream_url = AsyncMock()
     group = SonosGroup(client, {"id": "group1"})
     group.active_session_id = "session1"
 
     with pytest.raises(CommandTimeout):
         await group.stop()
 
-    client.api.playback_session.load_stream_url.assert_not_called()
+    client.api.playback_session.leave_session.assert_awaited_once_with("session1")
     assert group.active_session_id is None
 
 
 async def test_stop_fallback_refusal_is_still_suppressed() -> None:
-    """A fallback the speaker answers with an error is swallowed, as before."""
+    """A fallback leave the speaker answers with an error is logged; the stop is done."""
     client = MagicMock()
-    client.api.playback_session.suspend = AsyncMock(
-        side_effect=FailedCommand("ERROR_INVALID_PARAMETER"),
+    client.api.playback_session.leave_session = AsyncMock(
+        side_effect=[
+            FailedCommand("ERROR_INVALID_PARAMETER"),
+            FailedCommand("ERROR_PLAYBACK_FAILED"),
+        ],
     )
     client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "s2"})
-    client.api.playback_session.subscribe = AsyncMock()
-    client.api.playback_session.load_stream_url = AsyncMock(
-        side_effect=FailedCommand("ERROR_PLAYBACK_FAILED"),
-    )
+    client.api.playback_session.subscribe = AsyncMock(return_value=MagicMock())
     group = SonosGroup(client, {"id": "group1"})
     group.active_session_id = "session1"
 
     await group.stop()
 
-    client.api.playback_session.load_stream_url.assert_awaited_once()
+    assert client.api.playback_session.leave_session.await_args_list[1].args == ("s2",)
     assert group.active_session_id is None
 
 
