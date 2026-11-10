@@ -131,6 +131,54 @@ class PlayerVolume(TypedDict):
     volume: int
 
 
+class EqSettings(TypedDict):
+    """Representation of the eqSettings object within playerSettings."""
+
+    _objectType: str  # = eqSettings
+    bass: NotRequired[int]
+    treble: NotRequired[int]
+    loudness: NotRequired[bool]
+
+
+class HomeTheaterOptions(TypedDict):
+    """Representation of a homeTheaterOptions object/response."""
+
+    _objectType: str  # = homeTheaterOptions
+    nightMode: NotRequired[bool]
+    enhanceDialog: NotRequired[bool]
+    enhanceDialogLevel: NotRequired[int]
+    groupingLatency: NotRequired[int]
+    enableTrueRoom: NotRequired[bool]
+    enableVirtualHeight: NotRequired[bool]
+
+
+class PlayerSettings(TypedDict):
+    """Representation of a playerSettings object/response."""
+
+    _objectType: str  # = playerSettings
+    volumeMode: NotRequired[str]
+    volumeScalingFactor: NotRequired[float]
+    monoMode: NotRequired[bool]
+    enableSpatialAudio: NotRequired[bool]
+    enableSemiSleep: NotRequired[bool]
+    enableHTSourceSleep: NotRequired[bool]
+    wifiDisable: NotRequired[bool]
+    meshDisable: NotRequired[bool]
+    sonosnetEnabled: NotRequired[bool]
+    gainTrimDB: NotRequired[float]
+    roomName: NotRequired[str]
+    targetRoomName: NotRequired[str]
+    homeTheater: NotRequired[HomeTheaterOptions]
+    eq: NotRequired[EqSettings]
+
+
+class TvPowerState(StrEnum):
+    """Enum with the power states a home theater player can send to its TV."""
+
+    ON = "ON"
+    STANDBY = "STANDBY"
+
+
 class GroupVolume(TypedDict):
     """
     Representation of a GroupVolume object/response.
@@ -226,6 +274,13 @@ class Player(TypedDict):
     zoneInfo: ActiveZone
 
 
+class DeviceFeature(TypedDict):
+    """Representation of a hardware/software feature a device reports (e.g. LED_STATUS)."""
+
+    _objectType: str  # = feature
+    name: str
+
+
 class DeviceInfo(TypedDict):
     """Representation of device information."""
 
@@ -233,9 +288,11 @@ class DeviceInfo(TypedDict):
     id: str
     primaryDeviceId: NotRequired[str]
     serialNumber: NotRequired[str]
+    model: NotRequired[str]
     modelDisplayName: NotRequired[str]
     color: NotRequired[str]
     capabilities: list[SonosCapability]
+    deviceFeatures: NotRequired[list[DeviceFeature]]
     apiVersion: NotRequired[str]
     minApiVersion: NotRequired[str]
     name: NotRequired[str]

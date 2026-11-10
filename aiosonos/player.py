@@ -13,7 +13,12 @@ from aiosonos.exceptions import FailedCommand
 if TYPE_CHECKING:
     from aiosonos.group import SonosGroup
 
-    from .api.models import AudioClip, AudioClipStatus, AudioClipStatusEvent
+    from .api.models import (
+        AudioClip,
+        AudioClipStatus,
+        AudioClipStatusEvent,
+        PlayerSettings,
+    )
     from .api.models import Player as PlayerData
     from .api.models import PlayerVolume as PlayerVolumeData
     from .client import SonosLocalApiClient
@@ -31,6 +36,7 @@ class SonosPlayer:
         self.client = client
         self._data = data
         self._volume_data: PlayerVolumeData | None = None
+        self._settings: PlayerSettings | None = None
         self._audio_clips: dict[str, AudioClip] = {}
         self._audio_clips_subscribed = False
         self._audio_clips_lock = asyncio.Lock()
@@ -54,6 +60,10 @@ class SonosPlayer:
             self.id,
             self._handle_volume_update,
         )
+        try:
+            self._settings = await self.client.api.settings.get_player_settings(self.id)
+        except FailedCommand as err:
+            _LOGGER.debug("Could not get the settings of %s: %s", self.id, err)
 
     @property
     def name(self) -> str:
@@ -84,6 +94,25 @@ class SonosPlayer:
     def has_fixed_volume(self) -> bool | None:
         """Return if this player has a fixed volume level."""
         return self._volume_data.get("fixed")
+
+    @property
+    def settings(self) -> PlayerSettings | None:
+        """
+        Return the player's settings (EQ, home theater options, etc.).
+
+        The player sends no event when they change: call refresh_settings() to update them.
+        """
+        return self._settings
+
+    @property
+    def has_subwoofer(self) -> bool:
+        """Return if a subwoofer is bonded to this player."""
+        return "SW" in self._channels()
+
+    @property
+    def has_surrounds(self) -> bool:
+        """Return if surround speakers are bonded to this player."""
+        return not self._channels().isdisjoint({"LR", "RR"})
 
     @property
     def group(self) -> SonosGroup | None:
@@ -179,6 +208,22 @@ class SonosPlayer:
         """Load Home Theater playback."""
         await self.client.api.home_theater.load_home_theater_playback(self.id)
 
+    async def refresh_settings(self) -> None:
+        """Fetch the player's settings, signalling PLAYER_UPDATED when they changed."""
+        self._update_settings(await self.client.api.settings.get_player_settings(self.id))
+
+    async def set_home_theater_options(self, options: dict[str, bool | int]) -> None:
+        """
+        Set home theater options, e.g. {"nightMode": True}.
+
+        A player silently ignores an option it does not support.
+
+        :param options: The homeTheaterOptions fields to change.
+        """
+        applied = await self.client.api.home_theater.set_options(self.id, options)
+        if self._settings is not None:
+            self._update_settings({**self._settings, "homeTheater": applied})
+
     def update_data(self, data: PlayerData) -> None:
         """Update the player data."""
         self.check_active_group()
@@ -226,6 +271,23 @@ class SonosPlayer:
                 self,
             ),
         )
+
+    def _update_settings(self, settings: PlayerSettings) -> None:
+        if settings == self._settings:
+            return
+        self._settings = settings
+        self.client.signal_event(
+            PlayerEvent(
+                EventType.PLAYER_UPDATED,
+                self.id,
+                self,
+            ),
+        )
+
+    def _channels(self) -> set[str]:
+        """Return the channels of the speakers bonded into this player (e.g. LF, SW, LR)."""
+        members = self._data.get("zoneInfo", {}).get("members", [])
+        return {channel for member in members for channel in member.get("channelMap", [])}
 
     async def _subscribe_audio_clips(self) -> None:
         """Subscribe to this player's audio clip status, once per connection."""

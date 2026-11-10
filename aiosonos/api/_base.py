@@ -16,6 +16,7 @@ from aiosonos.api.namespaces.playback import PlaybackNameSpace
 from aiosonos.api.namespaces.playback_metadata import PlaybackMetadataNameSpace
 from aiosonos.api.namespaces.playback_session import PlaybackSessionNameSpace
 from aiosonos.api.namespaces.player_volume import PlayerVolumeNameSpace
+from aiosonos.api.namespaces.settings import SettingsNameSpace
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -40,6 +41,7 @@ class AbstractSonosApi:
         self._playback_session = PlaybackSessionNameSpace(self)
         self._player_volume = PlayerVolumeNameSpace(self)
         self._home_theater = HomeTheaterNameSpace(self)
+        self._settings = SettingsNameSpace(self)
         self._tracked_tasks: dict[str, asyncio.Task] = {}
 
     @property
@@ -86,6 +88,11 @@ class AbstractSonosApi:
     def home_theater(self) -> HomeTheaterNameSpace:
         """Return HomeTheater namespace handler."""
         return self._home_theater
+
+    @property
+    def settings(self) -> SettingsNameSpace:
+        """Return Settings namespace handler."""
+        return self._settings
 
     @abstractmethod
     async def send_command(
