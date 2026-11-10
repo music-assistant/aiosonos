@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Self, cast
 from aiosonos.const import EventType, GroupCoordinatorChangedEvent, GroupEvent, SonosEvent
 from aiosonos.utils import get_discovery_info
 
-from .api.upnp import SonosUpnpApi
 from .api.websockets import SonosLocalWebSocketsApi
 from .group import SonosGroup
 from .player import SonosPlayer
@@ -64,7 +63,6 @@ class SonosLocalApiClient:
         """Initialize the Sonos API client."""
         self.player_ip = player_ip
         self._aiohttp_session = aiohttp_session
-        self.upnp = SonosUpnpApi(aiohttp_session, player_ip)
         self._groups: dict[str, SonosGroup] = {}
         self._subscribers: list[EventSubscriptionType] = []
         # one in-flight setup (or pending retry) per group id

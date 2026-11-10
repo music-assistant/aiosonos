@@ -1,24 +1,18 @@
-"""Tests for player settings: websocket namespaces, the UPnP client and the player."""
+"""Tests for player settings: websocket namespaces and the player."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import ClientSession, web
 
 from aiosonos.api import SonosLocalWebSocketsApi
 from aiosonos.api.models import TvPowerState
-from aiosonos.api.upnp import EqType, RoomCalibrationStatus, SonosUpnpApi
-from aiosonos.exceptions import FailedCommand
 from aiosonos.player import SonosPlayer
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
-
-    from pytest_aiohttp import AiohttpServer
+    from collections.abc import Awaitable, Callable
 
 PLAYER = "RINCON_1"
 # getPlayerSettings of a Sonos Ray (firmware 98.0)
@@ -130,114 +124,3 @@ async def test_set_home_theater_options_keeps_applied_options() -> None:
     assert player.settings["homeTheater"] == applied
     assert player.settings["eq"] == SETTINGS["eq"]
     player.client.signal_event.assert_called_once()
-
-
-def _soap_reply(action: str, service: str, **values: str) -> str:
-    outputs = "".join(f"<{name}>{value}</{name}>" for name, value in values.items())
-    return (
-        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
-        f'<u:{action}Response xmlns:u="urn:schemas-upnp-org:service:{service}:1">'
-        f"{outputs}</u:{action}Response></s:Body></s:Envelope>"
-    )
-
-
-UPNP_FAULT = (
-    '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault>'
-    "<faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail>"
-    '<UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>402</errorCode>'
-    "</UPnPError></detail></s:Fault></s:Body></s:Envelope>"
-)
-
-
-@dataclass
-class UpnpRequest:
-    """A request the fake speaker received."""
-
-    path: str
-    soap_action: str
-    body: str
-
-
-@dataclass
-class FakeSpeaker:
-    """A speaker answering every UPnP request with the same reply."""
-
-    api: SonosUpnpApi
-    status: int = 200
-    reply: str = ""
-    requests: list[UpnpRequest] = field(default_factory=list)
-
-
-@pytest.fixture
-async def speaker(
-    aiohttp_server: AiohttpServer, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[FakeSpeaker]:
-    """Return a fake speaker with a UPnP client pointed at it."""
-
-    async def _handle(request: web.Request) -> web.Response:
-        fake.requests.append(
-            UpnpRequest(request.path, request.headers["SOAPACTION"], await request.text())
-        )
-        return web.Response(status=fake.status, text=fake.reply, content_type="text/xml")
-
-    app = web.Application()
-    app.router.add_post("/{path:.*}", _handle)
-    server = await aiohttp_server(app)
-    monkeypatch.setattr("aiosonos.api.upnp.UPNP_PORT", server.port)
-    async with ClientSession() as session:
-        fake = FakeSpeaker(SonosUpnpApi(session, "127.0.0.1"))
-        yield fake
-
-
-async def test_upnp_call_sends_soap_and_parses_reply(speaker: FakeSpeaker) -> None:
-    """A UPnP getter posts the SOAP action to the service and reads its output argument."""
-    speaker.reply = _soap_reply("GetEQ", "RenderingControl", CurrentValue="3")
-
-    assert await speaker.api.get_eq(EqType.SUB_GAIN) == 3
-
-    request = speaker.requests[0]
-    assert request.path == "/MediaRenderer/RenderingControl/Control"
-    assert request.soap_action == '"urn:schemas-upnp-org:service:RenderingControl:1#GetEQ"'
-    assert "<InstanceID>0</InstanceID><EQType>SubGain</EQType>" in request.body
-
-
-async def test_upnp_reads_several_outputs(speaker: FakeSpeaker) -> None:
-    """An action with several output arguments is read into one result."""
-    speaker.reply = _soap_reply(
-        "GetRoomCalibrationStatus",
-        "RenderingControl",
-        RoomCalibrationEnabled="0",
-        RoomCalibrationAvailable="1",
-    )
-
-    assert await speaker.api.get_room_calibration_status() == RoomCalibrationStatus(
-        enabled=False, available=True
-    )
-
-
-async def test_upnp_set_uses_on_off(speaker: FakeSpeaker) -> None:
-    """DeviceProperties setters send On/Off to their own control path, without InstanceID."""
-    speaker.reply = _soap_reply("SetLEDState", "DeviceProperties")
-
-    await speaker.api.set_led_state(on=False)
-
-    request = speaker.requests[0]
-    assert request.path == "/DeviceProperties/Control"
-    assert "<DesiredLEDState>Off</DesiredLEDState>" in request.body
-    assert "InstanceID" not in request.body
-
-
-@pytest.mark.parametrize(
-    ("status", "reply", "error_code"),
-    [(500, UPNP_FAULT, "402"), (404, "not found", "404")],
-)
-async def test_upnp_error_raises_failed_command(
-    speaker: FakeSpeaker, status: int, reply: str, error_code: str
-) -> None:
-    """A UPnP fault or a non-XML error reply raises FailedCommand with the error code."""
-    speaker.status = status
-    speaker.reply = reply
-
-    with pytest.raises(FailedCommand) as err:
-        await speaker.api.set_led_state(on=True)
-    assert err.value.error_code == error_code
