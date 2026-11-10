@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ._base import SonosNameSpace
 
 if TYPE_CHECKING:
-    from aiosonos.api.models import HomeTheaterOptions, TvPowerState
+    from aiosonos.api.models import HomeTheaterOptions
 
 
 class HomeTheaterNameSpace(SonosNameSpace):
@@ -34,17 +34,6 @@ class HomeTheaterNameSpace(SonosNameSpace):
             playerId=player_id,
         )
 
-    async def get_options(
-        self,
-        player_id: str,
-    ) -> HomeTheaterOptions:
-        """Get the home theater options (night mode, speech enhancement, etc.)."""
-        return await self.api.send_command(
-            namespace=self.namespace,
-            command="getOptions",
-            playerId=player_id,
-        )
-
     async def set_options(
         self,
         player_id: str,
@@ -63,32 +52,4 @@ class HomeTheaterNameSpace(SonosNameSpace):
             command="setOptions",
             playerId=player_id,
             options=options,
-        )
-
-    async def get_tv_power_state(
-        self,
-        player_id: str,
-    ) -> dict[str, Any]:
-        """
-        Get the power state of the TV connected over HDMI-CEC.
-
-        Raises FailedCommand on players without HDMI-CEC.
-        """
-        return await self.api.send_command(
-            namespace=self.namespace,
-            command="getTvPowerState",
-            playerId=player_id,
-        )
-
-    async def set_tv_power_state(
-        self,
-        player_id: str,
-        tv_power_state: TvPowerState,
-    ) -> None:
-        """Turn the TV connected over HDMI-CEC on or to standby."""
-        await self.api.send_command(
-            namespace=self.namespace,
-            command="setTvPowerState",
-            playerId=player_id,
-            options={"tvPowerState": tv_power_state},
         )

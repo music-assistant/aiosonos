@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from aiosonos.api import SonosLocalWebSocketsApi
-from aiosonos.api.models import TvPowerState
 from aiosonos.player import SonosPlayer
 
 if TYPE_CHECKING:
@@ -50,15 +49,6 @@ def _api() -> SonosLocalWebSocketsApi:
                 "command": "setOptions",
                 "playerId": PLAYER,
                 "options": {"nightMode": True},
-            },
-        ),
-        (
-            lambda api: api.home_theater.set_tv_power_state(PLAYER, TvPowerState.STANDBY),
-            {
-                "namespace": "homeTheater",
-                "command": "setTvPowerState",
-                "playerId": PLAYER,
-                "options": {"tvPowerState": "STANDBY"},
             },
         ),
     ],

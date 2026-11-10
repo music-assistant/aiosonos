@@ -172,13 +172,6 @@ class PlayerSettings(TypedDict):
     eq: NotRequired[EqSettings]
 
 
-class TvPowerState(StrEnum):
-    """Enum with the power states a home theater player can send to its TV."""
-
-    ON = "ON"
-    STANDBY = "STANDBY"
-
-
 class GroupVolume(TypedDict):
     """
     Representation of a GroupVolume object/response.
@@ -274,13 +267,6 @@ class Player(TypedDict):
     zoneInfo: ActiveZone
 
 
-class DeviceFeature(TypedDict):
-    """Representation of a hardware/software feature a device reports (e.g. LED_STATUS)."""
-
-    _objectType: str  # = feature
-    name: str
-
-
 class DeviceInfo(TypedDict):
     """Representation of device information."""
 
@@ -288,11 +274,9 @@ class DeviceInfo(TypedDict):
     id: str
     primaryDeviceId: NotRequired[str]
     serialNumber: NotRequired[str]
-    model: NotRequired[str]
     modelDisplayName: NotRequired[str]
     color: NotRequired[str]
     capabilities: list[SonosCapability]
-    deviceFeatures: NotRequired[list[DeviceFeature]]
     apiVersion: NotRequired[str]
     minApiVersion: NotRequired[str]
     name: NotRequired[str]
