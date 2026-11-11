@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     )
 
     from .api.models import Group as GroupData
+    from .api.models import GroupInfo
     from .client import SonosLocalApiClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -416,11 +417,12 @@ class SonosGroup:
         player_ids_to_remove: list[str],
     ) -> None:
         """Modify the group's members."""
-        await self.client.api.groups.modify_group_members(
+        group_info = await self.client.api.groups.modify_group_members(
             self.id,
             player_ids_to_add,
             player_ids_to_remove,
         )
+        self._handle_group_info(group_info)
 
     async def set_group_members(
         self,
@@ -428,7 +430,8 @@ class SonosGroup:
         area_ids: list[str] | None = None,
     ) -> None:
         """Set/replace the group's members."""
-        await self.client.api.groups.set_group_members(self.id, player_ids, area_ids)
+        group_info = await self.client.api.groups.set_group_members(self.id, player_ids, area_ids)
+        self._handle_group_info(group_info)
 
     async def create_playback_session(
         self,
@@ -537,6 +540,21 @@ class SonosGroup:
                 data["id"],
                 self,
             ),
+        )
+
+    def _handle_group_info(self, group_info: GroupInfo) -> None:
+        """Apply the group a group command answered with, as a groups event would."""
+        # the speaker answers with the new membership at once, while its groups event can
+        # follow seconds later; a reply without it, or for another group id, is left to that event
+        group_data = (group_info or {}).get("group")
+        if not group_data or "playerIds" not in group_data or group_data.get("id") != self.id:
+            return
+        # the reply lists a new member first; the coordinator's own groups events list the
+        # coordinator first
+        coordinator_id = group_data.get("coordinatorId")
+        group_data["playerIds"] = sorted(group_data["playerIds"], key=lambda x: x != coordinator_id)
+        self.client._handle_groups_event(  # noqa: SLF001
+            {"_objectType": "groups", "groups": [group_data], "players": [], "partial": True}
         )
 
     def _unsubscribe_status(self) -> None:
