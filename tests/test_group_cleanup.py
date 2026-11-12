@@ -265,6 +265,7 @@ async def test_start_listening_without_ready_event() -> None:
     api.groups.subscribe = AsyncMock()
     api.player_volume.get_volume = AsyncMock(return_value={})
     api.player_volume.subscribe = AsyncMock()
+    api.settings.get_player_settings = AsyncMock(return_value={})
     client.api = api
 
     await client.start_listening()
@@ -290,6 +291,7 @@ async def test_start_listening_keeps_the_player_across_connections() -> None:
     api.groups.subscribe = AsyncMock()
     api.player_volume.get_volume = AsyncMock(return_value={})
     api.player_volume.subscribe = AsyncMock()
+    api.settings.get_player_settings = AsyncMock(return_value={})
     client.api = api
     await client.start_listening()
     player = client.player
@@ -330,6 +332,7 @@ async def test_start_listening_refreshes_a_group_kept_across_connections() -> No
     api.groups.subscribe = AsyncMock()
     api.player_volume.get_volume = AsyncMock(return_value={})
     api.player_volume.subscribe = AsyncMock()
+    api.settings.get_player_settings = AsyncMock(return_value={})
     api.group_volume.get_volume = AsyncMock(return_value={})
     api.playback.get_playback_status = AsyncMock(
         return_value={"availablePlaybackActions": {}, "playModes": {}},

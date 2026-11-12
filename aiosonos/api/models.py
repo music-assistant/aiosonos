@@ -131,6 +131,47 @@ class PlayerVolume(TypedDict):
     volume: int
 
 
+class EqSettings(TypedDict):
+    """Representation of the eqSettings object within playerSettings."""
+
+    _objectType: str  # = eqSettings
+    bass: NotRequired[int]
+    treble: NotRequired[int]
+    loudness: NotRequired[bool]
+
+
+class HomeTheaterOptions(TypedDict):
+    """Representation of a homeTheaterOptions object/response."""
+
+    _objectType: str  # = homeTheaterOptions
+    nightMode: NotRequired[bool]
+    enhanceDialog: NotRequired[bool]
+    enhanceDialogLevel: NotRequired[int]
+    groupingLatency: NotRequired[int]
+    enableTrueRoom: NotRequired[bool]
+    enableVirtualHeight: NotRequired[bool]
+
+
+class PlayerSettings(TypedDict):
+    """Representation of a playerSettings object/response."""
+
+    _objectType: str  # = playerSettings
+    volumeMode: NotRequired[str]
+    volumeScalingFactor: NotRequired[float]
+    monoMode: NotRequired[bool]
+    enableSpatialAudio: NotRequired[bool]
+    enableSemiSleep: NotRequired[bool]
+    enableHTSourceSleep: NotRequired[bool]
+    wifiDisable: NotRequired[bool]
+    meshDisable: NotRequired[bool]
+    sonosnetEnabled: NotRequired[bool]
+    gainTrimDB: NotRequired[float]
+    roomName: NotRequired[str]
+    targetRoomName: NotRequired[str]
+    homeTheater: NotRequired[HomeTheaterOptions]
+    eq: NotRequired[EqSettings]
+
+
 class GroupVolume(TypedDict):
     """
     Representation of a GroupVolume object/response.
