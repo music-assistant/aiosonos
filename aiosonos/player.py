@@ -105,6 +105,12 @@ class SonosPlayer:
         return self._settings
 
     @property
+    def is_stereo_pair(self) -> bool:
+        """Return if this player is a stereo pair: two speakers that share the front channels."""
+        fronts = [member for member in self._zone_members() if {"LF", "RF"} & set(member)]
+        return len(fronts) > 1
+
+    @property
     def has_subwoofer(self) -> bool:
         """Return if a subwoofer is bonded to this player."""
         return "SW" in self._channels()
@@ -284,10 +290,14 @@ class SonosPlayer:
             ),
         )
 
+    def _zone_members(self) -> list[list[str]]:
+        """Return the channels each speaker bonded into this player plays (e.g. LF, SW, LR)."""
+        members = self._data.get("zoneInfo", {}).get("members", [])
+        return [member.get("channelMap", []) for member in members]
+
     def _channels(self) -> set[str]:
         """Return the channels of the speakers bonded into this player (e.g. LF, SW, LR)."""
-        members = self._data.get("zoneInfo", {}).get("members", [])
-        return {channel for member in members for channel in member.get("channelMap", [])}
+        return {channel for member in self._zone_members() for channel in member}
 
     async def _subscribe_audio_clips(self) -> None:
         """Subscribe to this player's audio clip status, once per connection."""

@@ -71,20 +71,26 @@ def _player(channel_maps: list[list[str]] | None = None) -> SonosPlayer:
 
 
 @pytest.mark.parametrize(
-    ("channel_maps", "has_subwoofer", "has_surrounds"),
+    ("channel_maps", "is_stereo_pair", "has_subwoofer", "has_surrounds"),
     [
-        ([["LF", "RF"]], False, False),
-        ([["LF", "RF"], ["SW"]], True, False),
-        ([["LF", "RF"], ["LR"], ["RR"]], False, True),
-        ([["LF", "RF"], ["SW"], ["LR"], ["RR"]], True, True),
-        (None, False, False),
+        ([["LF", "RF"]], False, False, False),
+        ([["LF", "RF"], ["SW"]], False, True, False),
+        ([["LF", "RF"], ["LR"], ["RR"]], False, False, True),
+        ([["LF", "RF"], ["SW"], ["LR"], ["RR"]], False, True, True),
+        ([["LF", "LF"], ["RF", "RF"]], True, False, False),
+        ([["LF"], ["RF"], ["SW"]], True, True, False),
+        (None, False, False, False),
     ],
 )
 def test_bonded_speakers_from_channel_map(
-    channel_maps: list[list[str]] | None, has_subwoofer: bool, has_surrounds: bool
+    channel_maps: list[list[str]] | None,
+    is_stereo_pair: bool,
+    has_subwoofer: bool,
+    has_surrounds: bool,
 ) -> None:
-    """A bonded sub (SW) and surrounds (LR/RR) are read from the zone's channel maps."""
+    """A stereo pair, a bonded sub (SW) and surrounds (LR/RR) are read from the channel maps."""
     player = _player(channel_maps)
+    assert player.is_stereo_pair is is_stereo_pair
     assert player.has_subwoofer is has_subwoofer
     assert player.has_surrounds is has_surrounds
 
