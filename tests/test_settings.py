@@ -66,7 +66,10 @@ def _player(channel_maps: list[list[str]] | None = None) -> SonosPlayer:
     client = MagicMock()
     client.groups = []
     client.api = _api()
-    members = [{"id": "x", "channelMap": channels} for channels in channel_maps or []]
+    members = [
+        {"id": PLAYER if index == 0 else f"RINCON_{index + 1}", "channelMap": channels}
+        for index, channels in enumerate(channel_maps or [])
+    ]
     return SonosPlayer(client, {"id": PLAYER, "name": "Ray", "zoneInfo": {"members": members}})
 
 
@@ -93,6 +96,22 @@ def test_bonded_speakers_from_channel_map(
     assert player.is_stereo_pair is is_stereo_pair
     assert player.has_subwoofer is has_subwoofer
     assert player.has_surrounds is has_surrounds
+
+
+@pytest.mark.parametrize(
+    ("channel_maps", "bonded_player_ids"),
+    [
+        (None, []),
+        ([[]], []),
+        ([["LF", "LF"], ["RF", "RF"]], ["RINCON_2"]),
+        ([["LF", "RF"], ["SW"], ["LR"], ["RR"]], ["RINCON_2", "RINCON_3", "RINCON_4"]),
+    ],
+)
+def test_bonded_player_ids(
+    channel_maps: list[list[str]] | None, bonded_player_ids: list[str]
+) -> None:
+    """The other speakers bonded into a player are listed, the player itself is not."""
+    assert _player(channel_maps).bonded_player_ids == bonded_player_ids
 
 
 async def test_refresh_settings_signals_only_changes() -> None:

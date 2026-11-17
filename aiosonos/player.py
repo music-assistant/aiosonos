@@ -121,6 +121,16 @@ class SonosPlayer:
         return not self._channels().isdisjoint({"LR", "RR"})
 
     @property
+    def bonded_player_ids(self) -> list[str]:
+        """Return the ids of the other speakers bonded into this player (pair, sub, surrounds)."""
+        members = self._data.get("zoneInfo", {}).get("members", [])
+        return [
+            member_id
+            for member in members
+            if (member_id := member.get("id")) and member_id != self.id
+        ]
+
+    @property
     def group(self) -> SonosGroup | None:
         """Return the active group."""
         return self._active_group
