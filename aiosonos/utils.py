@@ -5,7 +5,7 @@ from __future__ import annotations
 import ssl
 from typing import TYPE_CHECKING
 
-from aiosonos.const import LOCAL_API_TOKEN
+from aiosonos.const import LOCAL_API_PORT, LOCAL_API_TOKEN
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -25,10 +25,17 @@ def create_ssl_context() -> ssl.SSLContext:
 async def get_discovery_info(
     aiohttp_session: ClientSession,
     player_ip: str,
+    port: int = LOCAL_API_PORT,
 ) -> DiscoveryInfo:
-    """Get the discovery info for a player."""
+    """
+    Get the discovery info for a player.
+
+    :param aiohttp_session: The aiohttp session to use for the request.
+    :param player_ip: The IP address of the player.
+    :param port: The local API port of the player (each zone of an Amp Multi has its own).
+    """
     async with aiohttp_session.get(
-        f"https://{player_ip}:1443/api/v1/players/local/info",
+        f"https://{player_ip}:{port}/api/v1/players/local/info",
         headers={"X-Sonos-Api-Key": LOCAL_API_TOKEN},
         ssl=create_ssl_context(),
     ) as resp:

@@ -272,6 +272,7 @@ class DeviceInfo(TypedDict):
 
     _objectType: str  # = deviceInfo
     id: str
+    deviceId: NotRequired[str]
     primaryDeviceId: NotRequired[str]
     serialNumber: NotRequired[str]
     modelDisplayName: NotRequired[str]
