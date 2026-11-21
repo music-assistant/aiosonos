@@ -13,7 +13,13 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Self, cast
 
-from aiosonos.const import EventType, GroupCoordinatorChangedEvent, GroupEvent, SonosEvent
+from aiosonos.const import (
+    LOCAL_API_PORT,
+    EventType,
+    GroupCoordinatorChangedEvent,
+    GroupEvent,
+    SonosEvent,
+)
 from aiosonos.utils import get_discovery_info
 
 from .api.websockets import SonosLocalWebSocketsApi
@@ -59,9 +65,21 @@ class SonosLocalApiClient:
     _player_id: str
     _player: SonosPlayer | None = None
 
-    def __init__(self, player_ip: str, aiohttp_session: ClientSession) -> None:
-        """Initialize the Sonos API client."""
+    def __init__(
+        self,
+        player_ip: str,
+        aiohttp_session: ClientSession,
+        port: int = LOCAL_API_PORT,
+    ) -> None:
+        """
+        Initialize the Sonos API client.
+
+        :param player_ip: The IP address of the player.
+        :param aiohttp_session: The aiohttp session to use for all requests.
+        :param port: The local API port of the player (each zone of an Amp Multi has its own).
+        """
         self.player_ip = player_ip
+        self.port = port
         self._aiohttp_session = aiohttp_session
         self._groups: dict[str, SonosGroup] = {}
         self._subscribers: list[EventSubscriptionType] = []
@@ -132,7 +150,7 @@ class SonosLocalApiClient:
         """Connect to the API; a new connection replaces the last."""
         self._loop = asyncio.get_running_loop()
         # retrieve discovery details from player first
-        discovery_info = await get_discovery_info(self._aiohttp_session, self.player_ip)
+        discovery_info = await get_discovery_info(self._aiohttp_session, self.player_ip, self.port)
         self._player_id = discovery_info["playerId"]
         self._household_id = discovery_info["householdId"]
         if (old_api := getattr(self, "api", None)) is not None and old_api.connected:
