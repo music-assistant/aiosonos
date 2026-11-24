@@ -817,7 +817,8 @@ class SonosGroup:
                 return
             if session_id != self.active_session_id:
                 return
-            self._drop_stale_item(status.get("itemId"))
+            if item_id is not None and status.get("itemId") == item_id:
+                self._drop_stale_item(item_id)
             self._handle_playback_status_update(status)
 
     def _plays(self, item_id: str | None) -> bool:
@@ -827,16 +828,16 @@ class SonosGroup:
             self._playback_status_data.get("itemId"),
         )
 
-    def _drop_stale_item(self, item_id: str | None) -> None:
+    def _drop_stale_item(self, item_id: str) -> None:
         """
-        Forget the items in the metadata when another item is loaded by now.
+        Forget the items in the metadata when they are not about the given one.
 
-        :param item_id: The item the playback status is about, if any.
+        :param item_id: The item that is loaded by now.
         """
         # the metadata is held back along with the status events, also from a read: it keeps
         # naming the items of before the load until its own event arrives
         current_item = self._playback_metadata_data.get("currentItem") or {}
-        if item_id is None or current_item.get("id") in (None, item_id):
+        if current_item.get("id") in (None, item_id):
             return
         metadata = {
             key: value

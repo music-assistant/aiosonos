@@ -265,9 +265,10 @@ async def test_a_forgotten_item_is_signalled() -> None:
     ]
 
 
-async def test_metadata_that_is_not_stale_is_kept() -> None:
-    """Metadata stays when the status names no item, or the same one."""
-    group, read = _group(_status("PLAYING", item_id=None), _status("PLAYING"))
+@pytest.mark.parametrize("item_id", [ITEM, "item0@99", None])
+async def test_metadata_is_kept_until_the_loaded_item_is_named(item_id: str | None) -> None:
+    """Metadata of the loaded item stays, whatever item the status names meanwhile."""
+    group, read = _group(_status("BUFFERING", item_id=item_id), _status("PLAYING"))
     metadata = {"currentItem": {"id": ITEM}}
     group._playback_metadata_data = metadata
 
