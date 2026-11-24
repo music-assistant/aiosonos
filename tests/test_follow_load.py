@@ -245,6 +245,26 @@ async def test_the_item_of_before_the_load_is_forgotten() -> None:
     assert group.playback_metadata == {"container": container}
 
 
+async def test_a_forgotten_item_is_signalled() -> None:
+    """The item is signalled as gone, also when the status itself was known already."""
+    group, read = _group(_status("BUFFERING"), _status("PLAYING"))
+    group._handle_playback_status_update(_status("BUFFERING"))
+    group._playback_metadata_data = {"currentItem": {"id": "item0@99"}}
+    signalled: list[tuple[PlayBackState, bool]] = []
+    group.client.signal_event.side_effect = lambda _event: signalled.append(
+        (group.playback_state, "currentItem" in group.playback_metadata)
+    )
+
+    await group.play_cloud_queue("https://queue", item_id=ITEM)
+    await _followed(group)
+
+    assert read.await_count == 2
+    assert signalled == [
+        (PlayBackState.PLAYBACK_STATE_BUFFERING, False),
+        (PlayBackState.PLAYBACK_STATE_PLAYING, False),
+    ]
+
+
 async def test_metadata_that_is_not_stale_is_kept() -> None:
     """Metadata stays when the status names no item, or the same one."""
     group, read = _group(_status("PLAYING", item_id=None), _status("PLAYING"))

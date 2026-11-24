@@ -838,14 +838,12 @@ class SonosGroup:
         current_item = self._playback_metadata_data.get("currentItem") or {}
         if item_id is None or current_item.get("id") in (None, item_id):
             return
-        self._playback_metadata_data = cast(
-            "MetadataStatus",
-            {
-                key: value
-                for key, value in self._playback_metadata_data.items()
-                if key not in ("currentItem", "nextItem")
-            },
-        )
+        metadata = {
+            key: value
+            for key, value in self._playback_metadata_data.items()
+            if key not in ("currentItem", "nextItem")
+        }
+        self._handle_metadata_status_update(cast("MetadataStatus", metadata))
 
     def _stop_session_listener(self) -> None:
         """Stop listening to the session subscribed to (if any)."""
