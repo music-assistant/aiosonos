@@ -53,6 +53,10 @@ class InvalidMessage(SonosException):
     """Exception raised when an invalid message is received."""
 
 
+class NotAPlayer(SonosException):
+    """When a speaker is no player of its own, such as one bonded into another player."""
+
+
 class FailedCommand(SonosException):
     """When a command has failed."""
 
