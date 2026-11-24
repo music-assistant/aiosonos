@@ -536,7 +536,7 @@ class SonosGroup:
             except FailedCommand as err:
                 self._handle_refused_load(generation, session_id, err)
                 raise
-            self._follow_load(session_id)
+            self._follow_load(session_id, item_id)
 
     def update_data(self, data: GroupData) -> None:
         """Update the player data."""
@@ -781,10 +781,17 @@ class SonosGroup:
         else:
             self.active_session_id = None
 
-    def _follow_load(self, session_id: str) -> None:
-        """Follow the playback status of the content just loaded, until it plays."""
+    def _follow_load(self, session_id: str, item_id: str | None = None) -> None:
+        """
+        Follow the playback status of the content just loaded, until it plays.
+
+        :param session_id: The session it was loaded into.
+        :param item_id: The queue item it starts with, if any.
+        """
         self._stop_following_load()
-        self._load_follower = asyncio.create_task(self._read_status_until_playing(session_id))
+        self._load_follower = asyncio.create_task(
+            self._read_status_until_playing(session_id, item_id)
+        )
 
     def _stop_following_load(self) -> None:
         """Stop following the load made last (if any)."""
@@ -792,14 +799,11 @@ class SonosGroup:
             self._load_follower.cancel()
             self._load_follower = None
 
-    async def _read_status_until_playing(self, session_id: str) -> None:
-        """Read the playback status until the group plays, its session ends or it takes too long."""
+    async def _read_status_until_playing(self, session_id: str, item_id: str | None) -> None:
+        """Read the playback status until the load plays, its session ends or it takes too long."""
         for delay in LOAD_STATUS_DELAYS:
             await asyncio.sleep(delay)
-            if (
-                session_id != self.active_session_id
-                or self.playback_state == PlayBackState.PLAYBACK_STATE_PLAYING
-            ):
+            if session_id != self.active_session_id or self._plays(item_id):
                 return
             try:
                 status = await self.client.api.playback.get_playback_status(self.id)
@@ -815,6 +819,13 @@ class SonosGroup:
                 return
             self._drop_stale_item(status.get("itemId"))
             self._handle_playback_status_update(status)
+
+    def _plays(self, item_id: str | None) -> bool:
+        """Return whether the group plays the given queue item, or anything when None."""
+        return self.playback_state == PlayBackState.PLAYBACK_STATE_PLAYING and item_id in (
+            None,
+            self._playback_status_data.get("itemId"),
+        )
 
     def _drop_stale_item(self, item_id: str | None) -> None:
         """

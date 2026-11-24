@@ -88,7 +88,7 @@ async def test_a_load_is_seen_playing_without_an_event() -> None:
 
 async def test_a_stream_is_followed_as_well() -> None:
     """A stream URL load is followed like a cloud queue."""
-    group, read = _group(_status("PLAYING", item_id=None))
+    group, read = _group(_status("PLAYING"))
 
     await group.play_stream_url("https://stream", cast("Container", {}))
     await _followed(group)
@@ -106,6 +106,18 @@ async def test_nothing_is_read_once_an_event_reports_playing() -> None:
     await _followed(group)
 
     read.assert_not_awaited()
+
+
+async def test_a_load_into_a_playing_session_is_followed() -> None:
+    """A group that still reads as playing the previous item is read until the new one plays."""
+    group, read = _group(_status("PLAYING", item_id="item0@99"), _status("PLAYING", position=272))
+    group._handle_playback_status_update(_status("PLAYING", item_id="item0@99", position=60000))
+
+    await group.play_cloud_queue("https://queue", item_id=ITEM)
+    await _followed(group)
+
+    assert read.await_count == 2
+    assert group.position == pytest.approx(0.272, abs=0.2)
 
 
 async def test_a_read_that_fails_is_tried_again() -> None:
@@ -233,14 +245,14 @@ async def test_the_item_of_before_the_load_is_forgotten() -> None:
     assert group.playback_metadata == {"container": container}
 
 
-@pytest.mark.parametrize("item_id", [ITEM, None])
-async def test_metadata_that_is_not_stale_is_kept(item_id: str | None) -> None:
-    """Metadata stays when it names the item that plays, or the status names none."""
-    group, _ = _group(_status("PLAYING", item_id=item_id))
+async def test_metadata_that_is_not_stale_is_kept() -> None:
+    """Metadata stays when the status names no item, or the same one."""
+    group, read = _group(_status("PLAYING", item_id=None), _status("PLAYING"))
     metadata = {"currentItem": {"id": ITEM}}
     group._playback_metadata_data = metadata
 
     await group.play_cloud_queue("https://queue", item_id=ITEM)
     await _followed(group)
 
+    assert read.await_count == 2
     assert group.playback_metadata is metadata
