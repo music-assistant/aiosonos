@@ -18,14 +18,16 @@ import logging
 import time
 from contextlib import suppress
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+from aiohttp import ClientError
 
 from aiosonos.api.models import ContainerType, MetadataStatus, MusicService, PlayBackState
 from aiosonos.api.models import GroupVolume as GroupVolumeData
 from aiosonos.api.models import PlaybackStatus as PlaybackStatusData
 from aiosonos.api.models import PlayModes as PlayModesData
 from aiosonos.const import EventType, GroupEvent, PlaybackErrorEvent, SessionErrorEvent
-from aiosonos.exceptions import CommandTimeout, FailedCommand, InvalidState
+from aiosonos.exceptions import CommandTimeout, FailedCommand, InvalidState, SonosException
 
 from .api.models import PlaybackActions as PlaybackActionsData
 
@@ -51,6 +53,10 @@ SESSION_EVICTED_ERROR = "ERROR_SESSION_EVICTED"
 INVALID_OBJECT_ID_ERROR = "ERROR_INVALID_OBJECT_ID"
 DEFAULT_APP_ID = "com.aiosonos.playback"
 DEFAULT_APP_CONTEXT = "1"
+# Seconds to wait before each read of the playback status after a load, until the group
+# plays. A player can hold its status events back for seconds after a load (mostly up to 7,
+# now and then 25) while it plays already; it answers a read with its actual state.
+LOAD_STATUS_DELAYS: tuple[float, ...] = (0.5, 0.5, 1, 2, 4, 8, 15)
 
 
 def _session_error(err: FailedCommand) -> SessionError:
@@ -114,10 +120,13 @@ class SonosGroup:
         # so two never subscribe to one session twice or load into a session that is
         # still being subscribed to
         self._session_lock = asyncio.Lock()
+        # reads the playback status after a load, until the group plays
+        self._load_follower: asyncio.Task[None] | None = None
 
     def cleanup(self) -> None:
         """Handle cleanup on deletion, a move to another coordinator or a new connection."""
         self._unsubscribe_status()
+        self._stop_following_load()
         self._cleanup_generation += 1
         self._stop_session_listener()
         # no session is vouched for without listening to it; the next play makes a new one
@@ -527,6 +536,7 @@ class SonosGroup:
             except FailedCommand as err:
                 self._handle_refused_load(generation, session_id, err)
                 raise
+            self._follow_load(session_id)
 
     def update_data(self, data: GroupData) -> None:
         """Update the player data."""
@@ -723,6 +733,7 @@ class SonosGroup:
         except FailedCommand as err:
             self._handle_refused_load(generation, session["sessionId"], err)
             raise
+        self._follow_load(session["sessionId"])
 
     async def _clear_queue(self) -> None:
         """
@@ -769,6 +780,61 @@ class SonosGroup:
             self._handle_session_error(generation, session_id, _session_error(err))
         else:
             self.active_session_id = None
+
+    def _follow_load(self, session_id: str) -> None:
+        """Follow the playback status of the content just loaded, until it plays."""
+        self._stop_following_load()
+        self._load_follower = asyncio.create_task(self._read_status_until_playing(session_id))
+
+    def _stop_following_load(self) -> None:
+        """Stop following the load made last (if any)."""
+        if self._load_follower is not None:
+            self._load_follower.cancel()
+            self._load_follower = None
+
+    async def _read_status_until_playing(self, session_id: str) -> None:
+        """Read the playback status until the group plays, its session ends or it takes too long."""
+        for delay in LOAD_STATUS_DELAYS:
+            await asyncio.sleep(delay)
+            if (
+                session_id != self.active_session_id
+                or self.playback_state == PlayBackState.PLAYBACK_STATE_PLAYING
+            ):
+                return
+            try:
+                status = await self.client.api.playback.get_playback_status(self.id)
+            except FailedCommand as err:
+                # a player that waits for the audio it loads answers nothing meanwhile
+                _LOGGER.debug("Could not read the status of group %s: %s", self.id, err)
+                continue
+            except (SonosException, ClientError, OSError) as err:
+                # the connection is gone; a new one reads the status by itself
+                _LOGGER.debug("Stopped following the load of group %s: %s", self.id, err)
+                return
+            if session_id != self.active_session_id:
+                return
+            self._drop_stale_item(status.get("itemId"))
+            self._handle_playback_status_update(status)
+
+    def _drop_stale_item(self, item_id: str | None) -> None:
+        """
+        Forget the items in the metadata when another item is loaded by now.
+
+        :param item_id: The item the playback status is about, if any.
+        """
+        # the metadata is held back along with the status events, also from a read: it keeps
+        # naming the items of before the load until its own event arrives
+        current_item = self._playback_metadata_data.get("currentItem") or {}
+        if item_id is None or current_item.get("id") in (None, item_id):
+            return
+        self._playback_metadata_data = cast(
+            "MetadataStatus",
+            {
+                key: value
+                for key, value in self._playback_metadata_data.items()
+                if key not in ("currentItem", "nextItem")
+            },
+        )
 
     def _stop_session_listener(self) -> None:
         """Stop listening to the session subscribed to (if any)."""

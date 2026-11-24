@@ -371,6 +371,7 @@ class PlaybackStatus(TypedDict):
     _objectType: str  # = playbackStatus
     availablePlaybackActions: PlaybackActions
     isDucking: bool
+    itemId: NotRequired[str]  # the (cloud) queue item the position is in
     playbackState: PlayBackState
     playModes: PlayModes
     positionMillis: int
