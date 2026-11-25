@@ -836,8 +836,8 @@ class SonosGroup:
         """
         # the metadata is held back along with the status events, also from a read: it keeps
         # naming the items of before the load until its own event arrives
-        current_item = self._playback_metadata_data.get("currentItem") or {}
-        if current_item.get("id") in (None, item_id):
+        current_item = self._playback_metadata_data.get("currentItem")
+        if current_item is None or current_item.get("id") in (None, item_id):
             return
         metadata = {
             key: value
