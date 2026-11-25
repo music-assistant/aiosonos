@@ -20,6 +20,7 @@ from aiosonos.const import (
     GroupEvent,
     SonosEvent,
 )
+from aiosonos.exceptions import NotAPlayer
 from aiosonos.utils import get_discovery_info
 
 from .api.websockets import SonosLocalWebSocketsApi
@@ -180,7 +181,11 @@ class SonosLocalApiClient:
         await self.api.disconnect()
 
     async def start_listening(self, init_ready: asyncio.Event | None = None) -> None:
-        """Fetch initial state keep listening to messages until stopped."""
+        """
+        Fetch initial state keep listening to messages until stopped.
+
+        Raises `NotAPlayer` when connected to a speaker that is bonded into another player.
+        """
         listen_task = asyncio.create_task(self.api.start_listening())
         # fetch all initial data and setup subscriptions
         groups_data = await self.api.groups.get_groups(
@@ -198,7 +203,12 @@ class SonosLocalApiClient:
         # so we ignore all other player objects. For each Sonos player,
         # an individual api connection should be set-up to manage the player.
         # The Cloud API however is able to manage all players in the household.
-        player_data = next(x for x in groups_data["players"] if x["id"] == self._player_id)
+        player_data = next((x for x in groups_data["players"] if x["id"] == self._player_id), None)
+        if player_data is None:
+            # a speaker bonded into another player (stereo pair, surrounds, sub) does not
+            # list itself
+            msg = f"{self._player_id} is not one of the players of its household"
+            raise NotAPlayer(msg)
         if (player := self._player) is None:
             self._player = player = SonosPlayer(self, player_data)
         else:

@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
+
 from aiosonos.api.namespaces.audio_clip import AudioClipNameSpace
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType
-from aiosonos.exceptions import InvalidState
+from aiosonos.exceptions import InvalidState, NotAPlayer
 from aiosonos.group import SonosGroup
 from aiosonos.player import SonosPlayer
 
@@ -271,6 +273,25 @@ async def test_start_listening_without_ready_event() -> None:
     await client.start_listening()
 
     assert client.player.id == "RINCON_ME"
+
+
+async def test_start_listening_to_a_bonded_speaker() -> None:
+    """A speaker that does not list itself as a player is refused with an error of its own."""
+    client = SonosLocalApiClient("1.2.3.4", MagicMock())
+    client._player_id = "RINCON_BONDED"
+    client._household_id = "Sonos_1"
+    api = MagicMock()
+    api.start_listening = AsyncMock()
+    api.groups.get_groups = AsyncMock(
+        return_value={"groups": [], "players": [{"id": "RINCON_OTHER", "name": "Other"}]}
+    )
+    client.api = api
+    ready = asyncio.Event()
+
+    with pytest.raises(NotAPlayer, match="RINCON_BONDED"):
+        await client.start_listening(ready)
+
+    assert not ready.is_set()
 
 
 async def test_start_listening_keeps_the_player_across_connections() -> None:
