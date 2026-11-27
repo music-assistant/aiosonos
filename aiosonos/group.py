@@ -270,6 +270,17 @@ class SonosGroup:
         return self._playback_status_data.get("positionMillis", 0) / 1000
 
     @property
+    def playback_item_id(self) -> str | None:
+        """
+        Return the id of the (cloud) queue item the playback status says the group plays.
+
+        This is the item the position belongs to. At a change of track the status names the
+        new item before the playback metadata does. None when the status names no item, such
+        as for a source without a queue.
+        """
+        return self._playback_status_data.get("itemId")
+
+    @property
     def is_ducking(self) -> bool:
         """Return if the group's volume is currently ducked."""
         return self._playback_status_data.get("isDucking", False)
